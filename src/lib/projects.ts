@@ -7,6 +7,7 @@ export const PROJECT_REPOS: Record<string, string> = {
   "music-house": "daniels-project-space/music-house",
   "rental-manager-v2": "daniels-project-space/rental-manager-v2",
   "youtube-studio-ai": "daniels-project-space/youtube-studio-ai",
+  "db-cinema-v2": "daniels-project-space/db-cinema-v2",
 };
 
 export type ProjectMeta = {
@@ -46,6 +47,14 @@ export const PROJECTS: ProjectMeta[] = [
       "Modular AI YouTube video factory — block-based pipeline (Convex + Mastra + Trigger + R2 + Higgsfield).",
     repo: "daniels-project-space/youtube-studio-ai",
     services: ["convex", "cloudflare", "trigger", "higgsfield", "suno", "mureka", "youtube", "telegram", "replicate"],
+  },
+  {
+    slug: "db-cinema-v2",
+    name: "Db Cinema Rentals",
+    description:
+      "Standalone transactional film-gear rental storefront. Availability sourced from rental-manager-v2 (Hygglo ledger) via bridge; Stripe payments + deposits.",
+    repo: "daniels-project-space/db-cinema-v2",
+    services: ["convex", "vercel", "cloudflare", "trigger", "anthropic"],
   },
 ];
 
