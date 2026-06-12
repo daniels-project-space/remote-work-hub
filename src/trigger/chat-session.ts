@@ -6,11 +6,12 @@
  * clones the project's repo, runs Claude Code (Opus) HEADLESS on the
  * subscription token, streams the reply back into Convex, then commits + pushes.
  *
- * Cold-start latency is <=60s; once a conversation is active the in-run tight
- * poll picks up follow-ups in ~2s. Drop a prod TRIGGER secret key in later to
- * make `sendMessage` trigger this instantly.
- *
- * Auth + binary resolution are exactly as proven by claude-spike.
+ * Robustness rules learned the hard way:
+ *  - Only clone when repo is a real "owner/name" (the `hq` meta workspace's
+ *    "repo" is just the org label — not cloneable). Otherwise run general chat.
+ *  - Claude ALWAYS runs in a directory that exists; a failed clone never leaves
+ *    a missing cwd (which silently produced empty 3s replies).
+ *  - An empty/failed turn finalizes with a visible error, never a blank bubble.
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, existsSync, readFileSync, rmSync } from "node:fs";
@@ -20,8 +21,9 @@ import { schedules } from "@trigger.dev/sdk";
 
 const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
-const RUN_BUDGET_MS = 50_000; // stop claiming new work after this; never cut a turn off
-const IDLE_EXITS = 3; // empty polls (~2s each) before giving up this run
+const SCRATCH = "/tmp/ws/_scratch";
+const RUN_BUDGET_MS = 50_000;
+const IDLE_EXITS = 3;
 
 type ClaimResult = {
   projectSlug: string;
@@ -32,9 +34,8 @@ type ClaimResult = {
   history: { role: string; text: string }[];
 } | null;
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const isRealRepo = (repo: string) => /^[^/\s]+\/[^/\s]+$/.test(repo);
 
 async function convexMutation(path: string, args: Record<string, unknown>) {
   const res = await fetch(`${CONVEX}/api/mutation`, {
@@ -87,32 +88,31 @@ function sh(
   });
 }
 
-function remoteUrl(repo: string, token: string): string {
-  return `https://x-access-token:${token}@github.com/${repo}.git`;
-}
+const remoteUrl = (repo: string, token: string) =>
+  `https://x-access-token:${token}@github.com/${repo}.git`;
 
-/** Clone (or refresh) the repo into a per-project workdir. */
+/** Clone (or refresh) a real repo. Returns the dir, or null if the clone failed. */
 async function prepareRepo(
   slug: string,
   repo: string,
   token: string,
   env: NodeJS.ProcessEnv,
-): Promise<string> {
-  const dir = `/tmp/ws/${slug}`;
+): Promise<string | null> {
+  const dir = `/tmp/ws/${slug.replace(/[^a-z0-9_-]/gi, "_")}`;
   if (existsSync(join(dir, ".git"))) {
     await sh("git", ["-C", dir, "fetch", "--depth", "1", "origin"], { env });
-    await sh("git", ["-C", dir, "reset", "--hard", "origin/HEAD"], { env });
+    await sh("git", ["-C", dir, "reset", "--hard", "FETCH_HEAD"], { env });
     return dir;
   }
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dirname(dir), { recursive: true });
-  await sh("git", ["clone", "--depth", "1", remoteUrl(repo, token), dir], { env });
+  const clone = await sh("git", ["clone", "--depth", "1", remoteUrl(repo, token), dir], { env });
+  if (clone.code !== 0 || !existsSync(join(dir, ".git"))) return null;
   await sh("git", ["-C", dir, "config", "user.name", "Remote Work Hub Agent"], { env });
   await sh("git", ["-C", dir, "config", "user.email", "agent@remoteworkhq.local"], { env });
   return dir;
 }
 
-/** Run one Claude turn, streaming text into Convex. Returns final text + session id. */
 async function runTurn(
   bin: string,
   cwd: string,
@@ -120,12 +120,13 @@ async function runTurn(
   assistantId: string,
   userText: string,
   history: { role: string; text: string }[],
-): Promise<{ finalText: string; sessionId: string | null }> {
+  repoContext: string,
+): Promise<{ finalText: string; sessionId: string | null; code: number | null; stderr: string }> {
   const preamble =
-    "You are the Remote Work Hub agent. Your working directory IS the project's git repo. " +
-    "Make code changes directly with your tools and commit them with clear messages " +
-    "(git -C . commit -am '...'). Do NOT run 'git push' — the hub pushes for you after you finish. " +
-    "Keep replies concise and grounded in what you actually did.";
+    "You are the Remote Work Hub agent, reachable from the user's phone. " +
+    repoContext +
+    " Keep replies concise and grounded in what you actually did. " +
+    "When you change code, commit it (git -C . commit -am '...') but do NOT push — the hub pushes for you.";
   const convo =
     history.length > 0
       ? "Recent conversation:\n" +
@@ -154,6 +155,7 @@ async function runTurn(
     let finalText = "";
     let sessionId: string | null = null;
     let pending = "";
+    let stderr = "";
 
     const flush = async () => {
       if (!pending) return;
@@ -163,6 +165,7 @@ async function runTurn(
     };
     const flushTimer = setInterval(() => void flush(), 600);
 
+    p.stderr.on("data", (d) => (stderr += d.toString()));
     p.stdout.on("data", (d) => {
       buf += d.toString();
       let nl: number;
@@ -177,25 +180,23 @@ async function runTurn(
           continue;
         }
         if (ev.session_id && !sessionId) sessionId = ev.session_id;
-        // token-level deltas (live typing)
         if (ev.type === "stream_event" && ev.event?.type === "content_block_delta") {
           const t = ev.event.delta?.text;
           if (typeof t === "string") pending += t;
         }
-        // authoritative final text
         if (ev.type === "result" && typeof ev.result === "string") finalText = ev.result;
       }
     });
 
-    p.on("close", async () => {
+    p.on("close", async (code) => {
       clearInterval(flushTimer);
       await flush();
-      resolve({ finalText, sessionId });
+      resolve({ finalText, sessionId, code, stderr: stderr.slice(-400) });
     });
-    p.on("error", async () => {
+    p.on("error", async (e) => {
       clearInterval(flushTimer);
       await flush();
-      resolve({ finalText, sessionId });
+      resolve({ finalText, sessionId, code: -1, stderr: (stderr + "\n" + e.message).slice(-400) });
     });
   });
 }
@@ -213,6 +214,7 @@ export const chatDispatcher = schedules.task({
       ANTHROPIC_API_KEY: "",
     };
     mkdirSync("/tmp/claude-home", { recursive: true });
+    mkdirSync(SCRATCH, { recursive: true });
 
     if (!bin) return { processed: 0, error: "claude binary not found" };
 
@@ -230,54 +232,59 @@ export const chatDispatcher = schedules.task({
       idle = 0;
 
       try {
-        const cwd =
-          claim.repo && token
-            ? await prepareRepo(claim.projectSlug, claim.repo, token, env)
-            : "/tmp/claude-home";
+        // Decide working dir + how to brief the agent about the repo.
+        let cwd = SCRATCH;
+        let repoDir: string | null = null;
+        let repoContext: string;
+        if (isRealRepo(claim.repo) && token) {
+          repoDir = await prepareRepo(claim.projectSlug, claim.repo, token, env);
+          if (repoDir) {
+            cwd = repoDir;
+            repoContext = `Your working directory IS the git repo ${claim.repo} (already cloned).`;
+          } else {
+            repoContext = `NOTE: repo ${claim.repo} could not be cloned this turn — answer from knowledge; you cannot edit files.`;
+          }
+        } else {
+          repoContext =
+            "No single repo is mounted this turn (general workspace) — answer the user; you cannot edit files.";
+        }
 
-        const { finalText, sessionId } = await runTurn(
+        const turn = await runTurn(
           bin,
           cwd,
           env,
           claim.assistantId,
           claim.userText,
           claim.history,
+          repoContext,
         );
 
-        // commit + push anything the agent changed
-        let pushResult = "no repo";
-        if (claim.repo && token && cwd !== "/tmp/claude-home") {
-          await sh("git", ["-C", cwd, "add", "-A"], { env });
-          const status = await sh("git", ["-C", cwd, "status", "--porcelain"], { env });
+        // commit + push only when a real repo cloned cleanly
+        let pushResult = repoDir ? "nothing to push" : "no repo";
+        if (repoDir) {
+          await sh("git", ["-C", repoDir, "add", "-A"], { env });
+          const status = await sh("git", ["-C", repoDir, "status", "--porcelain"], { env });
           if (status.stdout.trim()) {
-            await sh(
-              "git",
-              ["-C", cwd, "commit", "-m", "chat: changes from hub conversation"],
-              { env },
-            );
-          }
-          const ahead = await sh(
-            "git",
-            ["-C", cwd, "rev-list", "--count", "@{u}..HEAD"],
-            { env },
-          );
-          if ((ahead.stdout.trim() || "0") !== "0") {
-            const push = await sh("git", ["-C", cwd, "push", remoteUrl(claim.repo, token), "HEAD"], {
-              env,
-            });
+            await sh("git", ["-C", repoDir, "commit", "-m", "chat: changes from hub conversation"], { env });
+            const push = await sh("git", ["-C", repoDir, "push", remoteUrl(claim.repo, token), "HEAD"], { env });
             pushResult = push.code === 0 ? "pushed" : `push failed: ${push.stderr.slice(0, 200)}`;
-          } else {
-            pushResult = "nothing to push";
           }
         }
+
+        // Never leave a blank bubble: surface failures.
+        const finalText =
+          turn.finalText.trim() ||
+          (turn.code === 0
+            ? "(the agent finished without producing any text)"
+            : `⚠️ the agent run failed (exit ${turn.code}). ${turn.stderr || ""}`.trim());
 
         await convexMutation("chat:finalize", {
           messageId: claim.assistantId,
           projectSlug: claim.projectSlug,
-          status: "done",
-          claudeSessionId: sessionId ?? undefined,
+          status: turn.finalText.trim() ? "done" : "error",
+          claudeSessionId: turn.sessionId ?? undefined,
           pushResult,
-          finalText: finalText || undefined,
+          finalText,
         });
         processed += 1;
       } catch (e) {
@@ -285,7 +292,7 @@ export const chatDispatcher = schedules.task({
           messageId: claim.assistantId,
           projectSlug: claim.projectSlug,
           status: "error",
-          finalText: `Error: ${e instanceof Error ? e.message : String(e)}`,
+          finalText: `⚠️ Error: ${e instanceof Error ? e.message : String(e)}`,
         }).catch(() => {});
       }
     }
