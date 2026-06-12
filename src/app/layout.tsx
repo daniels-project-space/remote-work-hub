@@ -5,6 +5,7 @@ import {
   IBM_Plex_Mono,
 } from "next/font/google";
 import { SessionProvider } from "@/components/session-provider";
+import { ConvexClientProvider } from "@/components/convex-provider";
 import "./globals.css";
 
 const display = Newsreader({
@@ -77,7 +78,9 @@ export default function RootLayout({
             }}
           />
         </div>
-        <SessionProvider>{children}</SessionProvider>
+        <ConvexClientProvider>
+          <SessionProvider>{children}</SessionProvider>
+        </ConvexClientProvider>
       </body>
     </html>
   );

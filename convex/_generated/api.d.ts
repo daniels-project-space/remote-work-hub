@@ -8,8 +8,10 @@
  * @module
  */
 
+import type * as chat from "../chat.js";
 import type * as projectLogs from "../projectLogs.js";
 import type * as sessions from "../sessions.js";
+import type * as spike from "../spike.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +20,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  chat: typeof chat;
   projectLogs: typeof projectLogs;
   sessions: typeof sessions;
+  spike: typeof spike;
 }>;
 
 /**

@@ -16,6 +16,8 @@
     "@21st-sdk/node": "^0.1.1",
     "@21st-sdk/react": "^0.1.4",
     "@ai-sdk/react": "^2.0.182",
+    "@trigger.dev/build": "^4.4.5",
+    "@trigger.dev/sdk": "^4.4.5",
     "ai": "^5.0.180",
     "clsx": "^2.1.1",
     "convex": "^1.37.0",
