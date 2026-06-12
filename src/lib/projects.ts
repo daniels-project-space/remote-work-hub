@@ -11,6 +11,19 @@ export const PROJECT_REPOS: Record<string, string> = {
   "finance-engine-v2": "daniels-project-space/finance-engine-v2",
 };
 
+// Meta workspace: ONE sandbox with every repo cloned side-by-side under
+// /workspace/project/<dir> — the project-hub dashboard, this hub itself, and
+// every registered project. Spawn + push special-case this slug in
+// lib/sessions.ts (multi-repo clone, per-repo push). repo label is the org so
+// the UI's GitHub link lands on the org page.
+export const META_SLUG = "hq";
+export const META_REPO_LABEL = "daniels-project-space";
+export const META_REPOS: Record<string, string> = {
+  "project-hub": "daniels-project-space/project-hub",
+  "remote-work-hub": "daniels-project-space/remote-work-hub",
+  ...PROJECT_REPOS,
+};
+
 export type ProjectMeta = {
   slug: string;
   name: string;
@@ -25,6 +38,14 @@ export type ProjectMeta = {
 // Public-safe project metadata (no secrets, no token URLs). Safe to ship to
 // the browser via server components.
 export const PROJECTS: ProjectMeta[] = [
+  {
+    slug: META_SLUG,
+    name: "HQ — All Projects",
+    description:
+      "Meta workspace: every repo cloned side-by-side — project-hub dashboard, remote-work-hub itself, and all project workspaces. Edit anything; Push syncs each repo that has new commits.",
+    repo: META_REPO_LABEL,
+    services: ["convex", "vercel", "cloudflare", "trigger", "anthropic", "openrouter", "21st"],
+  },
   {
     slug: "music-house",
     name: "Music House",
@@ -68,6 +89,7 @@ export const PROJECTS: ProjectMeta[] = [
 ];
 
 export function getRepoForSlug(slug: string): string | null {
+  if (slug === META_SLUG) return META_REPO_LABEL;
   return PROJECT_REPOS[slug] ?? null;
 }
 

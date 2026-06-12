@@ -3,7 +3,12 @@ import { AgentClient } from "@21st-sdk/node";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { getRepoForSlug, getServicesForSlug } from "@/lib/projects";
+import {
+  getRepoForSlug,
+  getServicesForSlug,
+  META_REPOS,
+  META_SLUG,
+} from "@/lib/projects";
 
 const PROJECT_PATH = "/home/user/workspace/project";
 const READY_PATH = `${PROJECT_PATH}/.hub-ready`;
@@ -103,6 +108,65 @@ function buildSetup(remoteUrl: string, priorLog: string | null, services: string
   return steps;
 }
 
+// Map dropped at the workspace root so the agent knows the multi-repo layout
+// and the per-repo push rules.
+function buildMetaWorkspaceMdCommand(services: string[]): string {
+  const repoLines = Object.entries(META_REPOS)
+    .map(([dir, repo]) => `- \`${dir}/\` -> github.com/${repo}`)
+    .join("\n");
+  const content = [
+    `# HQ workspace — all repos`,
+    ``,
+    `Every directory here is an independent git clone with push access:`,
+    ``,
+    repoLines,
+    ``,
+    `Rules:`,
+    `- Commit inside the repo you changed; each repo pushes to its own origin (main).`,
+    `- The hub Push button pushes EVERY repo that has new commits — keep commits clean per repo.`,
+    `- Vercel auto-deploys each app from main after push; no manual deploy needed.`,
+    `- Platform secrets are in ./.env.local at this workspace root (${services.join(", ")} + GITHUB_TOKEN). It is OUTSIDE every repo — never copy it into a repo.`,
+    `- Any other service's keys live in the vault:`,
+    `  curl -s -X POST '${VAULT_URL}/api/query' -H 'Content-Type: application/json' -d '{"path":"secrets:listByService","args":{"service":"<name>"},"format":"json"}'`,
+  ].join("\n");
+  const b64 = Buffer.from(content, "utf8").toString("base64");
+  return `echo ${b64} | base64 -d > ${PROJECT_PATH}/WORKSPACE.md`;
+}
+
+// Setup for the META_SLUG workspace: every repo in META_REPOS cloned
+// side-by-side under PROJECT_PATH (which is a plain directory here, not a git
+// repo). Vault env + GitHub token land in PROJECT_PATH/.env.local — outside
+// all clones, so it can never be committed.
+function buildMetaSetup(
+  ghToken: string,
+  priorLog: string | null,
+  services: string[],
+): string[] {
+  const steps = [`mkdir -p ${PROJECT_PATH}`];
+  for (const [dir, repo] of Object.entries(META_REPOS)) {
+    const path = `${PROJECT_PATH}/${dir}`;
+    steps.push(`git clone --depth 1 ${buildRemoteUrl(repo, ghToken)} ${path}`);
+    steps.push(`git -C ${path} config user.name "Remote Work Hub Agent"`);
+    steps.push(`git -C ${path} config user.email "agent@remoteworkhq.local"`);
+  }
+  steps.push(`chmod -R a+rw ${PROJECT_PATH}`);
+  steps.push(
+    `git config --system --add safe.directory '*' || git config --global --add safe.directory '*'`,
+  );
+  steps.push(buildMetaWorkspaceMdCommand(services));
+  if (services.length > 0) steps.push(buildVaultPullCommand(services));
+  steps.push(
+    `printf 'GITHUB_TOKEN=%s\\nGH_TOKEN=%s\\n' '${ghToken}' '${ghToken}' >> ${PROJECT_PATH}/.env.local`,
+  );
+  if (priorLog) {
+    const b64 = Buffer.from(priorLog, "utf8").toString("base64");
+    steps.push(`mkdir -p /home/user/.hub`);
+    steps.push(`echo ${b64} | base64 -d > /home/user/.hub/context.md`);
+  }
+  steps.push(`touch ${READY_PATH}`);
+  return steps;
+}
+
 
 type ConvexSession = {
   _id: Id<"sessions">;
@@ -170,16 +234,23 @@ export async function startSpawn(slug: string): Promise<Session> {
   if (existing && existing.repo === repo) return existing;
 
   const ghToken = need("GITHUB_TOKEN");
-  const remoteUrl = buildRemoteUrl(repo, ghToken);
   const c = agentClient();
 
   const priorLog = await getLatestLog(slug);
+  const setup =
+    slug === META_SLUG
+      ? buildMetaSetup(ghToken, priorLog, getServicesForSlug(slug))
+      : buildSetup(
+          buildRemoteUrl(repo, ghToken),
+          priorLog,
+          getServicesForSlug(slug),
+        );
   const sandbox = await c.sandboxes.create({
     agent: "hub-tester",
     timeoutMs: SANDBOX_TIMEOUT_MS,
     networkAllowOut: NETWORK_ALLOW,
     networkDenyOut: NETWORK_DENY,
-    setup: buildSetup(remoteUrl, priorLog, getServicesForSlug(slug)),
+    setup,
   });
 
   const thread = await c.threads.create({
@@ -338,6 +409,25 @@ export type PushResult = {
   stderr: string;
 };
 
+// Meta workspace push: walk every clone under PROJECT_PATH, push the ones
+// with commits ahead of upstream, and report uncommitted work per repo.
+function buildMetaPushCommand(): string {
+  return [
+    `for d in ${PROJECT_PATH}/*/;`,
+    `do [ -d "$d/.git" ] || continue;`,
+    `name=$(basename "$d");`,
+    `ahead=$(git -c safe.directory='*' -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0);`,
+    `if [ "$ahead" -gt 0 ]; then`,
+    `echo "== $name: pushing $ahead commit(s)";`,
+    `git -c safe.directory='*' -C "$d" push 2>&1;`,
+    `else echo "== $name: nothing to push";`,
+    `fi;`,
+    `dirty=$(git -c safe.directory='*' -C "$d" status --short | head -8);`,
+    `if [ -n "$dirty" ]; then echo "   uncommitted in $name:"; echo "$dirty"; fi;`,
+    `done`,
+  ].join(" ");
+}
+
 export async function pushSession(slug: string): Promise<PushResult> {
   const expectedRepo = getRepoForSlug(slug);
   if (!expectedRepo) {
@@ -362,15 +452,17 @@ export async function pushSession(slug: string): Promise<PushResult> {
     };
   }
 
+  const isMeta = slug === META_SLUG;
   const c = agentClient();
   const r = await c.sandboxes.exec({
     sandboxId: session.sandboxId,
-    command:
-      `git -c safe.directory='*' -C ${PROJECT_PATH} status --short && ` +
-      `git -c safe.directory='*' -C ${PROJECT_PATH} log --oneline -5 && ` +
-      `echo '---PUSH---' && ` +
-      `git -c safe.directory='*' -C ${PROJECT_PATH} push 2>&1`,
-    timeoutMs: 50_000,
+    command: isMeta
+      ? buildMetaPushCommand()
+      : `git -c safe.directory='*' -C ${PROJECT_PATH} status --short && ` +
+        `git -c safe.directory='*' -C ${PROJECT_PATH} log --oneline -5 && ` +
+        `echo '---PUSH---' && ` +
+        `git -c safe.directory='*' -C ${PROJECT_PATH} push 2>&1`,
+    timeoutMs: isMeta ? 120_000 : 50_000,
   });
 
   await convex().mutation(api.sessions.bumpLastActive, {
