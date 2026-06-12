@@ -27,9 +27,12 @@ const RUN_BUDGET_MS = 55_000;
 const IDLE_EXITS = 3;
 const POLL_MS = 1_500;
 
-// hq meta workspace: every repo cloned side-by-side. Mirrors projects.ts.
+// hq meta workspace: EVERY repo in the org, fetched live at runtime so newly
+// added projects appear automatically (no redeploy). Falls back to this static
+// list only if the GitHub API call fails.
 const META_SLUG = "hq";
-const META_REPOS: Record<string, string> = {
+const ORG = "daniels-project-space";
+const META_REPOS_FALLBACK: Record<string, string> = {
   "project-hub": "daniels-project-space/project-hub",
   "remote-work-hub": "daniels-project-space/remote-work-hub",
   "music-house": "daniels-project-space/music-house",
@@ -38,6 +41,40 @@ const META_REPOS: Record<string, string> = {
   "db-cinema-v2": "daniels-project-space/db-cinema-v2",
   "finance-engine-v2": "daniels-project-space/finance-engine-v2",
 };
+
+/** Live list of every active (non-archived, non-fork) repo in the org. */
+async function listOrgRepos(token: string): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  try {
+    for (let page = 1; page <= 5; page++) {
+      const res = await fetch(
+        `https://api.github.com/orgs/${ORG}/repos?per_page=100&page=${page}&type=all&sort=full_name`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "User-Agent": "remote-work-hub-dispatcher",
+          },
+        },
+      );
+      if (!res.ok) break;
+      const batch = (await res.json()) as Array<{
+        name: string;
+        full_name: string;
+        archived?: boolean;
+        fork?: boolean;
+      }>;
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      for (const r of batch) {
+        if (!r.archived && !r.fork) out[r.name] = r.full_name;
+      }
+      if (batch.length < 100) break;
+    }
+  } catch {
+    /* fall through to fallback */
+  }
+  return Object.keys(out).length ? out : META_REPOS_FALLBACK;
+}
 
 type ClaimResult = {
   projectSlug: string;
@@ -131,11 +168,12 @@ async function prepareRepo(slug: string, repo: string, token: string, env: NodeJ
   return (await cloneOrRefresh(dir, repo, token, env)) ? dir : null;
 }
 
-/** hq meta workspace: clone every repo side-by-side (in parallel). */
+/** hq meta workspace: clone EVERY active org repo side-by-side (in parallel). */
 async function prepareMetaWorkspace(token: string, env: NodeJS.ProcessEnv) {
   const base = "/tmp/ws/hq";
   mkdirSync(base, { recursive: true });
-  const entries = Object.entries(META_REPOS);
+  const map = await listOrgRepos(token);
+  const entries = Object.entries(map);
   const repos = await Promise.all(
     entries.map(async ([sub, repo]) => {
       const dir = join(base, sub);
@@ -143,7 +181,7 @@ async function prepareMetaWorkspace(token: string, env: NodeJS.ProcessEnv) {
       return { sub, dir, repo, ok };
     }),
   );
-  return { base, repos: repos.filter((r) => r.ok) };
+  return { base, names: entries.map(([sub]) => sub), repos: repos.filter((r) => r.ok) };
 }
 
 /** Commit + push a single cloned repo if it changed. Returns a short status. */
@@ -285,11 +323,14 @@ export const chatDispatcher = schedules.task({
           const meta = await prepareMetaWorkspace(token, env);
           cwd = meta.base;
           metaRepos = meta.repos.map((r) => ({ dir: r.dir, repo: r.repo }));
+          const subs = meta.repos.map((r) => r.sub);
           repoContext =
-            "This is the HQ meta workspace at the cwd. Every project is cloned as a subdirectory: " +
-            Object.keys(META_REPOS).join(", ") +
+            "This is the HQ meta workspace at the cwd. EVERY active project in the org is cloned " +
+            "here as a subdirectory (this list is live — new projects appear automatically): " +
+            subs.join(", ") +
             ". cd into whichever you need, read/edit files there, and commit inside that subdir " +
-            "(git -C <subdir> commit -am '...'). The hub pushes each repo you changed.";
+            "(git -C <subdir> commit -am '...'). The hub pushes each repo you changed. " +
+            "This includes the hub itself (remote-work-hub) and the dashboard (project-hub).";
         } else if (isRealRepo(claim.repo) && token) {
           singleRepoDir = await prepareRepo(claim.projectSlug, claim.repo, token, env);
           if (singleRepoDir) {
