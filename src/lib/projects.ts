@@ -8,6 +8,7 @@ export const PROJECT_REPOS: Record<string, string> = {
   "rental-manager-v2": "daniels-project-space/rental-manager-v2",
   "youtube-studio-ai": "daniels-project-space/youtube-studio-ai",
   "db-cinema-v2": "daniels-project-space/db-cinema-v2",
+  "finance-engine-v2": "daniels-project-space/finance-engine-v2",
 };
 
 export type ProjectMeta = {
@@ -55,6 +56,14 @@ export const PROJECTS: ProjectMeta[] = [
       "Standalone transactional film-gear rental storefront. Availability sourced from rental-manager-v2 (Hygglo ledger) via bridge; Stripe payments + deposits.",
     repo: "daniels-project-space/db-cinema-v2",
     services: ["convex", "vercel", "cloudflare", "trigger", "anthropic"],
+  },
+  {
+    slug: "finance-engine-v2",
+    name: "Finance Engine v2",
+    description:
+      "Self-improving crypto strategy lab. DSL expression-graph strategies, statistical gauntlet (walk-forward, DSR, sealed holdout), 30-day paper incubation, champion/challenger auto-promotion.",
+    repo: "daniels-project-space/finance-engine-v2",
+    services: ["convex", "cloudflare", "trigger", "anthropic", "openrouter", "telegram", "finance-engine-v2"],
   },
 ];
 
