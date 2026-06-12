@@ -35,15 +35,22 @@ export default function ConvexChatClient({
     [messages],
   );
 
+  const last = ordered[ordered.length - 1];
+  // The agent is "thinking" when the newest message is the user's (no assistant
+  // bubble yet) or an assistant bubble exists but hasn't produced text. Covers
+  // the ≤60s gap before the cloud dispatcher picks the turn up.
+  const thinking =
+    !!last &&
+    (last.role === "user" ||
+      (last.role === "assistant" &&
+        last.status === "streaming" &&
+        last.text.length === 0));
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [ordered]);
+  }, [ordered, thinking]);
 
   const working = session?.status === "working";
-  const lastPending =
-    ordered.length > 0 &&
-    (ordered[ordered.length - 1].status === "pending" ||
-      ordered[ordered.length - 1].status === "streaming");
 
   async function submit() {
     const text = draft.trim();
@@ -72,10 +79,10 @@ export default function ConvexChatClient({
           </h1>
           <span
             className={`font-mono text-[10px] uppercase tracking-[0.24em] shrink-0 ${
-              working ? "text-amber" : "text-paper-faint"
+              working || thinking ? "text-amber" : "text-paper-faint"
             }`}
           >
-            {working ? "● working" : "idle"}
+            {working || thinking ? "● working" : "idle"}
           </span>
         </div>
         <p className="mt-1 font-mono text-[11px] text-paper-dim truncate">{repo}</p>
@@ -110,26 +117,49 @@ export default function ConvexChatClient({
                     : "bg-paper/[0.04] border border-paper/10 text-paper rounded-2xl rounded-bl-sm"
                 }`}
               >
-                {m.text || (m.status === "streaming" ? "…" : "")}
-                {m.role === "assistant" && m.status === "streaming" && (
+                {m.text ||
+                  (m.role === "assistant" && m.status === "streaming" ? "…" : "")}
+                {m.role === "assistant" && m.status === "streaming" && m.text && (
                   <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-amber/70 animate-pulse" />
                 )}
-                {m.status === "error" && (
-                  <span className="block mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-rose-soft">
+                {m.status === "error" && !m.text && (
+                  <span className="block font-mono text-[10px] uppercase tracking-[0.2em] text-rose-soft">
                     error
                   </span>
                 )}
-                {m.pushResult && m.pushResult !== "nothing to push" && m.pushResult !== "no repo" && (
-                  <span className="block mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint">
-                    {m.pushResult}
-                  </span>
-                )}
+                {m.pushResult &&
+                  m.pushResult !== "nothing to push" &&
+                  m.pushResult !== "no repo" && (
+                    <span className="block mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-paper-faint">
+                      {m.pushResult}
+                    </span>
+                  )}
               </div>
             </div>
           ))
         )}
-        {working && !lastPending && (
-          <p className="font-mono text-[11px] text-amber/70">agent working…</p>
+
+        {thinking && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] px-4 py-3 bg-paper/[0.04] border border-paper/10 rounded-2xl rounded-bl-sm">
+              <div className="flex items-center gap-2">
+                <span className="flex gap-1" aria-hidden>
+                  {[0, 1, 2].map((i) => (
+                    <span
+                      key={i}
+                      className="w-1.5 h-1.5 rounded-full bg-amber/70"
+                      style={{
+                        animation: `pulse-dot 1.2s ease-in-out ${i * 0.15}s infinite`,
+                      }}
+                    />
+                  ))}
+                </span>
+                <span className="font-mono text-[11px] text-paper-dim">
+                  agent is working…
+                </span>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
@@ -158,7 +188,7 @@ export default function ConvexChatClient({
           </button>
         </div>
         <p className="mt-2 font-mono text-[10px] text-paper-faint">
-          Enter to send · Shift+Enter for newline · changes auto-push to {repo}
+          First reply can take up to a minute · then follow-ups are quick · changes auto-push to {repo}
         </p>
       </div>
     </main>

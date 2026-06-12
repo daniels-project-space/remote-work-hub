@@ -22,8 +22,9 @@ import { schedules } from "@trigger.dev/sdk";
 const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
 const SCRATCH = "/tmp/ws/_scratch";
-const RUN_BUDGET_MS = 50_000;
-const IDLE_EXITS = 3;
+const RUN_BUDGET_MS = 55_000;
+const IDLE_EXITS = 3; // cold runs (no work yet) give up after this; active runs stay warm
+const POLL_MS = 1_500;
 
 type ClaimResult = {
   projectSlug: string;
@@ -222,11 +223,14 @@ export const chatDispatcher = schedules.task({
     let processed = 0;
     let idle = 0;
 
-    while (Date.now() - started < RUN_BUDGET_MS && idle < IDLE_EXITS) {
+    while (Date.now() - started < RUN_BUDGET_MS) {
       const claim = (await convexMutation("chat:claimNext", {})) as ClaimResult;
       if (!claim) {
         idle += 1;
-        await sleep(2000);
+        // Cold run with nothing to do: exit cheaply. Once we've processed any
+        // work this run, stay warm and keep polling for fast follow-ups.
+        if (processed === 0 && idle >= IDLE_EXITS) break;
+        await sleep(POLL_MS);
         continue;
       }
       idle = 0;
