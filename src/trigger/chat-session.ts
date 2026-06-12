@@ -2,16 +2,17 @@
  * `chat-dispatcher` — the cloud replacement for the 21st.dev hub chat.
  *
  * A 1-minute declarative schedule (a PAT cannot trigger on demand, so we poll).
- * Each run drains the Convex pending-message queue: for every user message it
- * clones the project's repo, runs Claude Code (Opus) HEADLESS on the
- * subscription token, streams the reply back into Convex, then commits + pushes.
+ * Each run drains the Convex pending-message queue. For each user message it
+ * mounts the right files, runs Claude Code (Opus) HEADLESS on the subscription
+ * token, streams the reply into Convex, then commits + pushes.
  *
- * Robustness rules learned the hard way:
- *  - Only clone when repo is a real "owner/name" (the `hq` meta workspace's
- *    "repo" is just the org label — not cloneable). Otherwise run general chat.
- *  - Claude ALWAYS runs in a directory that exists; a failed clone never leaves
- *    a missing cwd (which silently produced empty 3s replies).
- *  - An empty/failed turn finalizes with a visible error, never a blank bubble.
+ * Three workspace modes:
+ *  - `hq` META workspace: every repo cloned side-by-side; the agent cd's into
+ *    whichever it needs; each changed repo is pushed.
+ *  - single real "owner/name" repo: cloned at the cwd; pushed if changed.
+ *  - no repo: general chat in a scratch dir (always exists).
+ * Claude ALWAYS runs in a directory that exists, and an empty/failed turn
+ * finalizes with a visible error — never a blank bubble.
  */
 import { spawn } from "node:child_process";
 import { mkdirSync, existsSync, readFileSync, rmSync } from "node:fs";
@@ -23,8 +24,20 @@ const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
 const SCRATCH = "/tmp/ws/_scratch";
 const RUN_BUDGET_MS = 55_000;
-const IDLE_EXITS = 3; // cold runs (no work yet) give up after this; active runs stay warm
+const IDLE_EXITS = 3;
 const POLL_MS = 1_500;
+
+// hq meta workspace: every repo cloned side-by-side. Mirrors projects.ts.
+const META_SLUG = "hq";
+const META_REPOS: Record<string, string> = {
+  "project-hub": "daniels-project-space/project-hub",
+  "remote-work-hub": "daniels-project-space/remote-work-hub",
+  "music-house": "daniels-project-space/music-house",
+  "rental-manager-v2": "daniels-project-space/rental-manager-v2",
+  "youtube-studio-ai": "daniels-project-space/youtube-studio-ai",
+  "db-cinema-v2": "daniels-project-space/db-cinema-v2",
+  "finance-engine-v2": "daniels-project-space/finance-engine-v2",
+};
 
 type ClaimResult = {
   projectSlug: string;
@@ -92,26 +105,55 @@ function sh(
 const remoteUrl = (repo: string, token: string) =>
   `https://x-access-token:${token}@github.com/${repo}.git`;
 
-/** Clone (or refresh) a real repo. Returns the dir, or null if the clone failed. */
-async function prepareRepo(
-  slug: string,
+async function cloneOrRefresh(
+  dir: string,
   repo: string,
   token: string,
   env: NodeJS.ProcessEnv,
-): Promise<string | null> {
-  const dir = `/tmp/ws/${slug.replace(/[^a-z0-9_-]/gi, "_")}`;
+): Promise<boolean> {
   if (existsSync(join(dir, ".git"))) {
     await sh("git", ["-C", dir, "fetch", "--depth", "1", "origin"], { env });
     await sh("git", ["-C", dir, "reset", "--hard", "FETCH_HEAD"], { env });
-    return dir;
+    return true;
   }
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dirname(dir), { recursive: true });
   const clone = await sh("git", ["clone", "--depth", "1", remoteUrl(repo, token), dir], { env });
-  if (clone.code !== 0 || !existsSync(join(dir, ".git"))) return null;
+  if (clone.code !== 0 || !existsSync(join(dir, ".git"))) return false;
   await sh("git", ["-C", dir, "config", "user.name", "Remote Work Hub Agent"], { env });
   await sh("git", ["-C", dir, "config", "user.email", "agent@remoteworkhq.local"], { env });
-  return dir;
+  return true;
+}
+
+/** Single repo. Returns the dir or null on clone failure. */
+async function prepareRepo(slug: string, repo: string, token: string, env: NodeJS.ProcessEnv) {
+  const dir = `/tmp/ws/${slug.replace(/[^a-z0-9_-]/gi, "_")}`;
+  return (await cloneOrRefresh(dir, repo, token, env)) ? dir : null;
+}
+
+/** hq meta workspace: clone every repo side-by-side (in parallel). */
+async function prepareMetaWorkspace(token: string, env: NodeJS.ProcessEnv) {
+  const base = "/tmp/ws/hq";
+  mkdirSync(base, { recursive: true });
+  const entries = Object.entries(META_REPOS);
+  const repos = await Promise.all(
+    entries.map(async ([sub, repo]) => {
+      const dir = join(base, sub);
+      const ok = await cloneOrRefresh(dir, repo, token, env);
+      return { sub, dir, repo, ok };
+    }),
+  );
+  return { base, repos: repos.filter((r) => r.ok) };
+}
+
+/** Commit + push a single cloned repo if it changed. Returns a short status. */
+async function commitAndPush(dir: string, repo: string, token: string, env: NodeJS.ProcessEnv) {
+  await sh("git", ["-C", dir, "add", "-A"], { env });
+  const status = await sh("git", ["-C", dir, "status", "--porcelain"], { env });
+  if (!status.stdout.trim()) return null; // unchanged
+  await sh("git", ["-C", dir, "commit", "-m", "chat: changes from hub conversation"], { env });
+  const push = await sh("git", ["-C", dir, "push", remoteUrl(repo, token), "HEAD"], { env });
+  return push.code === 0 ? `pushed ${repo}` : `push failed ${repo}: ${push.stderr.slice(0, 120)}`;
 }
 
 async function runTurn(
@@ -127,7 +169,7 @@ async function runTurn(
     "You are the Remote Work Hub agent, reachable from the user's phone. " +
     repoContext +
     " Keep replies concise and grounded in what you actually did. " +
-    "When you change code, commit it (git -C . commit -am '...') but do NOT push — the hub pushes for you.";
+    "When you change code, commit it (git -C <dir> commit -am '...') but do NOT push — the hub pushes for you.";
   const convo =
     history.length > 0
       ? "Recent conversation:\n" +
@@ -227,8 +269,6 @@ export const chatDispatcher = schedules.task({
       const claim = (await convexMutation("chat:claimNext", {})) as ClaimResult;
       if (!claim) {
         idle += 1;
-        // Cold run with nothing to do: exit cheaply. Once we've processed any
-        // work this run, stay warm and keep polling for fast follow-ups.
         if (processed === 0 && idle >= IDLE_EXITS) break;
         await sleep(POLL_MS);
         continue;
@@ -236,14 +276,24 @@ export const chatDispatcher = schedules.task({
       idle = 0;
 
       try {
-        // Decide working dir + how to brief the agent about the repo.
         let cwd = SCRATCH;
-        let repoDir: string | null = null;
         let repoContext: string;
-        if (isRealRepo(claim.repo) && token) {
-          repoDir = await prepareRepo(claim.projectSlug, claim.repo, token, env);
-          if (repoDir) {
-            cwd = repoDir;
+        let singleRepoDir: string | null = null;
+        let metaRepos: { dir: string; repo: string }[] | null = null;
+
+        if (claim.projectSlug === META_SLUG && token) {
+          const meta = await prepareMetaWorkspace(token, env);
+          cwd = meta.base;
+          metaRepos = meta.repos.map((r) => ({ dir: r.dir, repo: r.repo }));
+          repoContext =
+            "This is the HQ meta workspace at the cwd. Every project is cloned as a subdirectory: " +
+            Object.keys(META_REPOS).join(", ") +
+            ". cd into whichever you need, read/edit files there, and commit inside that subdir " +
+            "(git -C <subdir> commit -am '...'). The hub pushes each repo you changed.";
+        } else if (isRealRepo(claim.repo) && token) {
+          singleRepoDir = await prepareRepo(claim.projectSlug, claim.repo, token, env);
+          if (singleRepoDir) {
+            cwd = singleRepoDir;
             repoContext = `Your working directory IS the git repo ${claim.repo} (already cloned).`;
           } else {
             repoContext = `NOTE: repo ${claim.repo} could not be cloned this turn — answer from knowledge; you cannot edit files.`;
@@ -263,19 +313,19 @@ export const chatDispatcher = schedules.task({
           repoContext,
         );
 
-        // commit + push only when a real repo cloned cleanly
-        let pushResult = repoDir ? "nothing to push" : "no repo";
-        if (repoDir) {
-          await sh("git", ["-C", repoDir, "add", "-A"], { env });
-          const status = await sh("git", ["-C", repoDir, "status", "--porcelain"], { env });
-          if (status.stdout.trim()) {
-            await sh("git", ["-C", repoDir, "commit", "-m", "chat: changes from hub conversation"], { env });
-            const push = await sh("git", ["-C", repoDir, "push", remoteUrl(claim.repo, token), "HEAD"], { env });
-            pushResult = push.code === 0 ? "pushed" : `push failed: ${push.stderr.slice(0, 200)}`;
+        // Push whatever changed.
+        let pushResult = "no repo";
+        if (metaRepos) {
+          const pushes: string[] = [];
+          for (const r of metaRepos) {
+            const res = await commitAndPush(r.dir, r.repo, token, env).catch(() => null);
+            if (res) pushes.push(res);
           }
+          pushResult = pushes.length ? pushes.join("; ") : "nothing to push";
+        } else if (singleRepoDir) {
+          pushResult = (await commitAndPush(singleRepoDir, claim.repo, token, env).catch(() => null)) ?? "nothing to push";
         }
 
-        // Never leave a blank bubble: surface failures.
         const finalText =
           turn.finalText.trim() ||
           (turn.code === 0
