@@ -184,14 +184,29 @@ async function prepareMetaWorkspace(token: string, env: NodeJS.ProcessEnv) {
   return { base, names: entries.map(([sub]) => sub), repos: repos.filter((r) => r.ok) };
 }
 
-/** Commit + push a single cloned repo if it changed. Returns a short status. */
+/**
+ * Commit + push a cloned repo. Handles BOTH cases: the agent left uncommitted
+ * changes (we commit them), or the agent already committed during its turn
+ * (clean tree but a commit ahead of origin — must still be pushed). Returns a
+ * short status, or null if there was genuinely nothing to push.
+ */
 async function commitAndPush(dir: string, repo: string, token: string, env: NodeJS.ProcessEnv) {
   await sh("git", ["-C", dir, "add", "-A"], { env });
   const status = await sh("git", ["-C", dir, "status", "--porcelain"], { env });
-  if (!status.stdout.trim()) return null; // unchanged
-  await sh("git", ["-C", dir, "commit", "-m", "chat: changes from hub conversation"], { env });
-  const push = await sh("git", ["-C", dir, "push", remoteUrl(repo, token), "HEAD"], { env });
-  return push.code === 0 ? `pushed ${repo}` : `push failed ${repo}: ${push.stderr.slice(0, 120)}`;
+  if (status.stdout.trim()) {
+    await sh("git", ["-C", dir, "commit", "-m", "chat: changes from hub conversation"], { env });
+  }
+  // Always attempt the push — a no-op if nothing is ahead. This is what catches
+  // the agent's own commit (clean tree, commit ahead of origin).
+  let push = await sh("git", ["-C", dir, "push", remoteUrl(repo, token), "HEAD"], { env });
+  const out = (push.stdout + push.stderr).toLowerCase();
+  if (/shallow update not allowed/.test(out)) {
+    await sh("git", ["-C", dir, "fetch", "--unshallow"], { env });
+    push = await sh("git", ["-C", dir, "push", remoteUrl(repo, token), "HEAD"], { env });
+  }
+  const out2 = (push.stdout + push.stderr).toLowerCase();
+  if (/everything up-to-date/.test(out2)) return null;
+  return push.code === 0 ? `pushed ${repo}` : `push failed ${repo}: ${push.stderr.slice(0, 140)}`;
 }
 
 async function runTurn(
