@@ -19,6 +19,9 @@ const NETWORK_ALLOW = [
   "*.github.com",
   "objects.githubusercontent.com",
   "codeload.github.com",
+  // Secrets vault + per-app Convex deployments — without this the setup-time
+  // vault pull (and any in-sandbox Convex access) is silently blocked.
+  "*.convex.cloud",
 ];
 const NETWORK_DENY = ["0.0.0.0/0"];
 
@@ -65,8 +68,10 @@ const VAULT_URL = process.env.VAULT_URL ?? "https://fantastic-roadrunner-485.con
 function buildVaultPullCommand(services: string[]): string {
   const env = JSON.stringify(VAULT_URL);
   const svcList = JSON.stringify(services);
+  // stdout/stderr land in .hub-vault.log so a failed pull is diagnosable via
+  // the file route instead of vanishing with the setup logs.
   return [
-    `python3 - <<'PYEND'`,
+    `python3 - > ${PROJECT_PATH}/.hub-vault.log 2>&1 <<'PYEND'`,
     `import urllib.request, json, os`,
     `VAULT = ${env}`,
     `services = ${svcList}`,
