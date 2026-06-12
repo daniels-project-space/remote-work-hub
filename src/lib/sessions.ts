@@ -82,7 +82,7 @@ function buildVaultPullCommand(services: string[]): string {
     `existing = open(p).read() if os.path.exists(p) else \"\"`,
     `new_keys = {l.split(\"=\",1)[0] for l in lines}`,
     `keep = [l for l in existing.splitlines() if l and l.split(\"=\",1)[0] not in new_keys]`,
-    `open(p,\"w\").write(\"\n\".join(keep + lines) + \"\n\")`,
+    `open(p,\"w\").write(\"\\n\".join(keep + lines) + \"\\n\")`,
     `print(f\"vault: wrote {len(lines)} keys from {len(services)} services\")`,
     `PYEND`,
   ].join("\n");
