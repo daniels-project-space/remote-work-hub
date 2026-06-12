@@ -61,36 +61,35 @@ function buildRemoteUrl(repo: string, ghToken: string): string {
 
 const VAULT_URL = process.env.VAULT_URL ?? "https://fantastic-roadrunner-485.convex.cloud";
 
-// Bash one-liner that runs inside the sandbox: pulls every key for each
-// requested service from the project-hub Convex secrets vault and appends
-// KEY=VALUE lines to .env.local in the cloned project. Idempotent — replaces
-// any existing line with the same KEY.
+// Single-line setup command: pulls every key for each requested service from
+// the project-hub Convex secrets vault and writes KEY=VALUE lines to
+// .env.local. Idempotent — replaces any existing line with the same KEY.
+// The python source ships base64-encoded because the sandbox setup runner
+// only executes single-line commands (multi-line heredocs silently no-op).
+// stdout/stderr land in .hub-vault.log so a failed pull is diagnosable via
+// the file route.
 function buildVaultPullCommand(services: string[]): string {
-  const env = JSON.stringify(VAULT_URL);
-  const svcList = JSON.stringify(services);
-  // stdout/stderr land in .hub-vault.log so a failed pull is diagnosable via
-  // the file route instead of vanishing with the setup logs.
-  return [
-    `python3 - > ${PROJECT_PATH}/.hub-vault.log 2>&1 <<'PYEND'`,
-    `import urllib.request, json, os`,
-    `VAULT = ${env}`,
-    `services = ${svcList}`,
-    `lines = []`,
-    `for svc in services:`,
-    `    body = json.dumps({\"path\":\"secrets:listByService\",\"args\":{\"service\":svc},\"format\":\"json\"}).encode()`,
-    `    req = urllib.request.Request(VAULT + \"/api/query\", data=body, headers={\"Content-Type\":\"application/json\"}, method=\"POST\")`,
-    `    rows = json.loads(urllib.request.urlopen(req).read()).get(\"value\", []) or []`,
-    `    for r in rows:`,
-    `        v = (r.get(\"value\") or \"\").replace(\"\\n\", \"\\\\n\")`,
-    `        lines.append(f\"{r['keyName']}={v}\")`,
-    `p = \"${PROJECT_PATH}/.env.local\"`,
-    `existing = open(p).read() if os.path.exists(p) else \"\"`,
-    `new_keys = {l.split(\"=\",1)[0] for l in lines}`,
-    `keep = [l for l in existing.splitlines() if l and l.split(\"=\",1)[0] not in new_keys]`,
-    `open(p,\"w\").write(\"\\n\".join(keep + lines) + \"\\n\")`,
-    `print(f\"vault: wrote {len(lines)} keys from {len(services)} services\")`,
-    `PYEND`,
+  const py = [
+    "import urllib.request, json, os",
+    `VAULT = ${JSON.stringify(VAULT_URL)}`,
+    `services = ${JSON.stringify(services)}`,
+    "lines = []",
+    "for svc in services:",
+    '    body = json.dumps({"path": "secrets:listByService", "args": {"service": svc}, "format": "json"}).encode()',
+    '    req = urllib.request.Request(VAULT + "/api/query", data=body, headers={"Content-Type": "application/json"}, method="POST")',
+    '    rows = json.loads(urllib.request.urlopen(req).read()).get("value") or []',
+    "    for r in rows:",
+    '        v = (r.get("value") or "").replace("\\n", "\\\\n")',
+    '        lines.append(r["keyName"] + "=" + v)',
+    `p = "${PROJECT_PATH}/.env.local"`,
+    'existing = open(p).read() if os.path.exists(p) else ""',
+    'new_keys = set(l.split("=", 1)[0] for l in lines)',
+    'keep = [l for l in existing.splitlines() if l and l.split("=", 1)[0] not in new_keys]',
+    'open(p, "w").write("\\n".join(keep + lines) + "\\n")',
+    'print("vault: wrote %d keys from %d services" % (len(lines), len(services)))',
   ].join("\n");
+  const b64 = Buffer.from(py, "utf8").toString("base64");
+  return `echo ${b64} | base64 -d > /tmp/vault_pull.py && python3 /tmp/vault_pull.py > ${PROJECT_PATH}/.hub-vault.log 2>&1`;
 }
 
 function buildSetup(remoteUrl: string, priorLog: string | null, services: string[]): string[] {
