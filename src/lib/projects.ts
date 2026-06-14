@@ -9,6 +9,7 @@ export const PROJECT_REPOS: Record<string, string> = {
   "youtube-studio-ai": "daniels-project-space/youtube-studio-ai",
   "db-cinema-v2": "daniels-project-space/db-cinema-v2",
   "finance-engine-v2": "daniels-project-space/finance-engine-v2",
+  "dropship-ai": "daniels-project-space/dropship-ai",
 };
 
 // Meta workspace: ONE sandbox with every repo cloned side-by-side under
@@ -85,6 +86,14 @@ export const PROJECTS: ProjectMeta[] = [
       "Self-improving crypto strategy lab. DSL expression-graph strategies, statistical gauntlet (walk-forward, DSR, sealed holdout), 30-day paper incubation, champion/challenger auto-promotion.",
     repo: "daniels-project-space/finance-engine-v2",
     services: ["convex", "cloudflare", "trigger", "anthropic", "openrouter", "telegram", "finance-engine-v2"],
+  },
+  {
+    slug: "dropship-ai",
+    name: "Dropship AI",
+    description:
+      "Autonomous AI dropshipping control plane — multi-tenant Shopify+CJ stores, organic-first content engine, human-gated approval queue.",
+    repo: "daniels-project-space/dropship-ai",
+    services: ["convex", "cloudflare", "cj", "shopify", "ayrshare", "anthropic", "fal", "elevenlabs", "replicate"],
   },
 ];
 
