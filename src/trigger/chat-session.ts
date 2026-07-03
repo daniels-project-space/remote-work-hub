@@ -24,7 +24,10 @@ const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
 const SCRATCH = "/tmp/ws/_scratch";
 const RUN_BUDGET_MS = 55_000;
-const IDLE_EXITS = 3;
+// Poll-diet 2026-07-03: 2 idle polls (~3s) before exiting an empty run, and
+// the schedule below fires every 2 min instead of every 1 (halves Trigger
+// runs/day; worst-case cold pickup 2 min, warm follow-ups unaffected).
+const IDLE_EXITS = 2;
 const POLL_MS = 1_500;
 
 // hq meta workspace: EVERY repo in the org, fetched live at runtime so newly
@@ -299,7 +302,7 @@ async function runTurn(
 
 export const chatDispatcher = schedules.task({
   id: "chat-dispatcher",
-  cron: "* * * * *",
+  cron: "*/2 * * * *",
   maxDuration: 3300,
   run: async () => {
     const bin = resolveClaudeBin();
