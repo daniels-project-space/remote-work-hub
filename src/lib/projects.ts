@@ -10,6 +10,7 @@ export const PROJECT_REPOS: Record<string, string> = {
   "db-cinema-v2": "daniels-project-space/db-cinema-v2",
   "finance-engine-v2": "daniels-project-space/finance-engine-v2",
   "dropship-ai": "daniels-project-space/dropship-ai",
+  "media-engine": "daniels-project-space/media-engine",
 };
 
 // Meta workspace: ONE sandbox with every repo cloned side-by-side under
@@ -94,6 +95,14 @@ export const PROJECTS: ProjectMeta[] = [
       "Autonomous AI dropshipping control plane — multi-tenant Shopify+CJ stores, organic-first content engine, human-gated approval queue.",
     repo: "daniels-project-space/dropship-ai",
     services: ["convex", "cloudflare", "cj", "shopify", "ayrshare", "anthropic", "fal", "elevenlabs", "replicate"],
+  },
+  {
+    slug: "media-engine",
+    name: "Media Engine",
+    description:
+      "Unified marketing & media engine — AI persona Instagram growth, UGC product ad streams, YouTube Shorts factory, email marketing. Modular streams with hybrid approval queue and in-house posting service.",
+    repo: "daniels-project-space/media-engine",
+    services: ["convex", "cloudflare", "trigger", "openai", "fal", "elevenlabs", "resend", "openrouter", "anthropic", "replicate", "media-engine"],
   },
 ];
 
