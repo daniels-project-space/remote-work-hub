@@ -4,6 +4,7 @@ import "server-only";
 // Cross-contamination defense: every server-side write/push derives the repo
 // from this table, NOT from anything the client sends.
 export const PROJECT_REPOS: Record<string, string> = {
+  "jarvis": "daniels-project-space/jarvis",
   "music-house": "daniels-project-space/music-house",
   "rental-manager-v2": "daniels-project-space/rental-manager-v2",
   "youtube-studio-ai": "daniels-project-space/youtube-studio-ai",
@@ -47,6 +48,14 @@ export const PROJECTS: ProjectMeta[] = [
       "Meta workspace: every repo cloned side-by-side — project-hub dashboard, remote-work-hub itself, and all project workspaces. Edit anything; Push syncs each repo that has new commits.",
     repo: META_REPO_LABEL,
     services: ["convex", "vercel", "cloudflare", "trigger", "anthropic", "openrouter", "21st"],
+  },
+  {
+    slug: "jarvis",
+    name: "JARVIS",
+    description:
+      "Personal ops assistant — animated Live2D face, voice (Chatterbox), self-maintaining memory, and background agents that action tasks and report back.",
+    repo: "daniels-project-space/jarvis",
+    services: ["convex", "vercel", "cloudflare", "trigger", "anthropic", "openrouter", "replicate", "groq", "browserbase", "jarvis"],
   },
   {
     slug: "music-house",
