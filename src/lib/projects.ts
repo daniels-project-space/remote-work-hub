@@ -12,6 +12,7 @@ export const PROJECT_REPOS: Record<string, string> = {
   "finance-engine-v2": "daniels-project-space/finance-engine-v2",
   "dropship-ai": "daniels-project-space/dropship-ai",
   "media-engine": "daniels-project-space/media-engine",
+  "app-factory-v2": "daniels-project-space/app-factory-v2",
 };
 
 // Meta workspace: ONE sandbox with every repo cloned side-by-side under
@@ -112,6 +113,14 @@ export const PROJECTS: ProjectMeta[] = [
       "Unified marketing & media engine — AI persona Instagram growth, UGC product ad streams, YouTube Shorts factory, email marketing. Modular streams with hybrid approval queue and in-house posting service.",
     repo: "daniels-project-space/media-engine",
     services: ["convex", "cloudflare", "trigger", "openai", "fal", "elevenlabs", "resend", "openrouter", "anthropic", "replicate", "media-engine"],
+  },
+  {
+    slug: "app-factory-v2",
+    name: "App Factory v2",
+    description:
+      "Autonomous idea→app builder — Mastra agents on Claude Max, Convex state machine, Trigger.dev pipeline, Playwright+vision validation, forge lane for OSS conversions.",
+    repo: "daniels-project-space/app-factory-v2",
+    services: ["convex", "cloudflare", "trigger", "stripe", "app-factory-v2"],
   },
 ];
 
