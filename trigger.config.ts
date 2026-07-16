@@ -28,9 +28,9 @@ export default defineConfig({
     // Codex spawns its own subprocesses and reads its bundled binary from
     // disk — keep it OUT of the esbuild bundle and let Trigger install it fresh
     // in the Linux image (correct platform binary).
-    external: ["@openai/codex"],
+    external: ["@openai/codex", "@anthropic-ai/claude-code"],
     extensions: [
-      additionalPackages({ packages: ["@openai/codex@latest"] }),
+      additionalPackages({ packages: ["@openai/codex@latest", "@anthropic-ai/claude-code@latest"] }),
       aptGet({ packages: ["git", "ca-certificates"] }),
       // Deployment-only bridge: pass CODEX_AUTH_JSON_B64 in the CLI environment
       // and Trigger stores it as a managed runtime secret. If it is absent,

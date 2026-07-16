@@ -25,8 +25,21 @@ export const CODEX_PRESETS = {
   },
 } as const;
 
+export const CLAUDE_PRESETS = {
+  fast: { label: "Fast", model: "haiku", description: "Quick fixes, searches, and routine maintenance." },
+  balanced: { label: "Balanced", model: "sonnet", description: "Default for normal implementation work." },
+  deep: { label: "Deep", model: "opus", description: "Architecture, debugging, and consequential changes." },
+  max: { label: "Max", model: "opus", description: "Hardest tasks; uses the strongest Claude subscription model." },
+} as const;
+
+export type AgentProvider = "codex" | "claude";
+
 export type CodexPreset = keyof typeof CODEX_PRESETS;
 
 export function isCodexPreset(value: string): value is CodexPreset {
   return Object.prototype.hasOwnProperty.call(CODEX_PRESETS, value);
+}
+
+export function isAgentProvider(value: string): value is AgentProvider {
+  return value === "codex" || value === "claude";
 }

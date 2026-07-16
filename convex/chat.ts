@@ -33,11 +33,12 @@ export const sendMessage = mutation({
     projectSlug: v.string(),
     repo: v.string(),
     text: v.string(),
+    agentProvider: v.optional(v.union(v.literal("codex"), v.literal("claude"))),
     agentPreset: v.optional(
       v.union(v.literal("fast"), v.literal("balanced"), v.literal("deep"), v.literal("max")),
     ),
   },
-  handler: async (ctx, { projectSlug, repo, text, agentPreset }) => {
+  handler: async (ctx, { projectSlug, repo, text, agentProvider, agentPreset }) => {
     await ensureSession(ctx, projectSlug, repo);
     const id = await ctx.db.insert("chatMessages", {
       projectSlug,
@@ -45,6 +46,7 @@ export const sendMessage = mutation({
       text,
       status: "pending" as const,
       createdAt: Date.now(),
+      agentProvider: agentProvider ?? "codex",
       agentPreset: agentPreset ?? "balanced",
     });
     return id;
@@ -122,7 +124,11 @@ export const claimNext = mutation({
       repo: session?.repo ?? "",
       userText: pending.text,
       assistantId,
-      agentSessionId: session?.agentSessionId ?? session?.claudeSessionId ?? null,
+      agentProvider: pending.agentProvider ?? "codex",
+      agentSessionId:
+        (pending.agentProvider ?? "codex") === "claude"
+          ? session?.claudeSessionId ?? null
+          : session?.codexSessionId ?? session?.agentSessionId ?? null,
       agentPreset: pending.agentPreset ?? "balanced",
       history,
     };
@@ -145,6 +151,7 @@ export const finalize = mutation({
     messageId: v.id("chatMessages"),
     projectSlug: v.string(),
     status: v.union(v.literal("done"), v.literal("error")),
+    agentProvider: v.optional(v.union(v.literal("codex"), v.literal("claude"))),
     agentSessionId: v.optional(v.string()),
     pushResult: v.optional(v.string()),
     finalText: v.optional(v.string()),
@@ -161,7 +168,13 @@ export const finalize = mutation({
       .first();
     if (session) {
       const sp: Record<string, unknown> = { status: "idle", lastActiveAt: Date.now() };
-      if (args.agentSessionId) sp.agentSessionId = args.agentSessionId;
+      if (args.agentSessionId) {
+        if (args.agentProvider === "claude") sp.claudeSessionId = args.agentSessionId;
+        else {
+          sp.codexSessionId = args.agentSessionId;
+          sp.agentSessionId = args.agentSessionId;
+        }
+      }
       await ctx.db.patch(session._id, sp);
     }
   },

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
-import { CODEX_PRESETS, type CodexPreset } from "@/lib/agent-options";
+import { CLAUDE_PRESETS, CODEX_PRESETS, type AgentProvider, type CodexPreset } from "@/lib/agent-options";
 
 type Msg = {
   _id: string;
@@ -30,6 +30,7 @@ export default function ConvexChatClient({
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [agentPreset, setAgentPreset] = useState<CodexPreset>("balanced");
+  const [agentProvider, setAgentProvider] = useState<AgentProvider>("codex");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const ordered = useMemo(
@@ -52,6 +53,11 @@ export default function ConvexChatClient({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [ordered, thinking]);
 
+  useEffect(() => {
+    const saved = localStorage.getItem("hub_agent_provider");
+    if (saved === "codex" || saved === "claude") setAgentProvider(saved);
+  }, []);
+
   const working = session?.status === "working";
 
   async function submit() {
@@ -60,7 +66,7 @@ export default function ConvexChatClient({
     setSending(true);
     setDraft("");
     try {
-      await sendMessage({ projectSlug: slug, repo, text, agentPreset });
+      await sendMessage({ projectSlug: slug, repo, text, agentProvider, agentPreset });
     } finally {
       setSending(false);
     }
@@ -102,8 +108,8 @@ export default function ConvexChatClient({
               cloud agent · ready
             </p>
             <p className="mt-3 text-sm text-paper-dim max-w-sm mx-auto leading-relaxed">
-              Ask anything or describe a change. Codex runs in the cloud on your
-              ChatGPT subscription, edits {repo}, and pushes when done.
+              Ask anything or describe a change. Your chosen subscription agent
+              runs in the cloud, edits {repo}, and pushes when done.
             </p>
           </div>
         ) : (
@@ -166,13 +172,30 @@ export default function ConvexChatClient({
       </div>
 
       <div className="sticky bottom-0 px-5 sm:px-8 py-4 bg-ink/80 backdrop-blur-sm border-t border-paper/10">
+        <div className="mb-2 flex items-center gap-1 rounded-lg border border-paper/10 p-1 w-fit">
+          {(["codex", "claude"] as AgentProvider[]).map((provider) => (
+            <button
+              key={provider}
+              type="button"
+              onClick={() => {
+                setAgentProvider(provider);
+                localStorage.setItem("hub_agent_provider", provider);
+              }}
+              className={`rounded-md px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.16em] transition-colors ${
+                agentProvider === provider ? "bg-amber/15 text-amber" : "text-paper-faint hover:text-paper-dim"
+              }`}
+            >
+              {provider}
+            </button>
+          ))}
+        </div>
         <div className="mb-2 flex items-center gap-2 overflow-x-auto pb-1">
-          {(Object.entries(CODEX_PRESETS) as [CodexPreset, (typeof CODEX_PRESETS)[CodexPreset]][]).map(
+          {(Object.entries(agentProvider === "codex" ? CODEX_PRESETS : CLAUDE_PRESETS) as [CodexPreset, { label: string; model: string; description: string; effort?: string }][]).map(
             ([key, preset]) => (
               <button
                 key={key}
                 type="button"
-                title={`${preset.model} · ${preset.effort} reasoning · ${preset.description}`}
+                title={`${preset.model}${preset.effort ? ` · ${preset.effort} reasoning` : ""} · ${preset.description}`}
                 onClick={() => setAgentPreset(key)}
                 className={`shrink-0 rounded-lg border px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors ${
                   agentPreset === key
@@ -185,7 +208,9 @@ export default function ConvexChatClient({
             ),
           )}
           <span className="ml-auto shrink-0 font-mono text-[9px] text-paper-faint">
-            {CODEX_PRESETS[agentPreset].model} · {CODEX_PRESETS[agentPreset].effort}
+            {agentProvider === "codex"
+              ? `${CODEX_PRESETS[agentPreset].model} · ${CODEX_PRESETS[agentPreset].effort}`
+              : CLAUDE_PRESETS[agentPreset].model}
           </span>
         </div>
         <div className="flex items-end gap-2">

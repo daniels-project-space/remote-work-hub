@@ -44,6 +44,7 @@ export default defineSchema({
     repo: v.string(),
     status: v.union(v.literal("idle"), v.literal("working")),
     agentSessionId: v.optional(v.string()),
+    codexSessionId: v.optional(v.string()),
     // Kept during the migration so existing rows remain readable.
     claudeSessionId: v.optional(v.string()),
     lastActiveAt: v.number(),
@@ -62,6 +63,7 @@ export default defineSchema({
       v.literal("error"),
     ),
     createdAt: v.number(),
+    agentProvider: v.optional(v.union(v.literal("codex"), v.literal("claude"))),
     agentPreset: v.optional(
       v.union(v.literal("fast"), v.literal("balanced"), v.literal("deep"), v.literal("max")),
     ),

@@ -19,7 +19,7 @@ import { chmodSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync }
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { schedules } from "@trigger.dev/sdk";
-import { CODEX_PRESETS, isCodexPreset, type CodexPreset } from "../lib/agent-options";
+import { CLAUDE_PRESETS, CODEX_PRESETS, isAgentProvider, isCodexPreset, type AgentProvider, type CodexPreset } from "../lib/agent-options";
 
 const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
@@ -90,6 +90,7 @@ type ClaimResult = {
   userText: string;
   assistantId: string;
   agentSessionId: string | null;
+  agentProvider: string;
   agentPreset: string;
   history: { role: string; text: string }[];
 } | null;
@@ -122,6 +123,21 @@ function resolveCodexBin(): string | null {
     } catch {
       /* ignore */
     }
+    return candidates.find((c) => existsSync(c)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveClaudeBin(): string | null {
+  try {
+    const pkgJson = require.resolve("@anthropic-ai/claude-code/package.json");
+    const pkgDir = dirname(pkgJson);
+    const nodeModules = dirname(dirname(pkgDir));
+    const candidates = [join(nodeModules, ".bin", "claude")];
+    const pkg = JSON.parse(readFileSync(pkgJson, "utf8")) as { bin?: string | Record<string, string> };
+    const rel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.claude;
+    if (rel) candidates.push(join(pkgDir, rel));
     return candidates.find((c) => existsSync(c)) ?? null;
   } catch {
     return null;
@@ -248,7 +264,7 @@ async function commitAndPush(dir: string, repo: string, token: string, env: Node
   return push.code === 0 ? `pushed ${repo}` : `push failed ${repo}: ${push.stderr.slice(0, 140)}`;
 }
 
-async function runTurn(
+async function runCodexTurn(
   bin: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -341,25 +357,75 @@ async function runTurn(
   });
 }
 
+async function runClaudeTurn(
+  bin: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  assistantId: string,
+  userText: string,
+  history: { role: string; text: string }[],
+  repoContext: string,
+  presetName: CodexPreset,
+): Promise<{ finalText: string; sessionId: string | null; code: number | null; stderr: string }> {
+  const preamble =
+    "You are the Remote Work Hub agent, reachable from the user's phone. " + repoContext +
+    " Keep replies concise and grounded in what you actually did. When you change code, commit it but do not push.";
+  const convo = history.length
+    ? "Recent conversation:\n" + history.map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`).join("\n") + "\n\n"
+    : "";
+  const args = [
+    "-p", `${convo}User: ${userText}`, "--append-system-prompt", preamble,
+    "--model", CLAUDE_PRESETS[presetName].model, "--output-format", "stream-json", "--verbose",
+    "--include-partial-messages", "--dangerously-skip-permissions",
+  ];
+  return await new Promise((resolve) => {
+    const p = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let buf = "", finalText = "", pending = "", stderr = "";
+    let sessionId: string | null = null;
+    const flush = async () => {
+      if (!pending) return;
+      const chunk = pending;
+      pending = "";
+      await convexMutation("chat:appendChunk", { messageId: assistantId, chunk }).catch(() => {});
+    };
+    const timer = setInterval(() => void flush(), 600);
+    p.stderr.on("data", (d) => (stderr += d.toString()));
+    p.stdout.on("data", (d) => {
+      buf += d.toString();
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.session_id && !sessionId) sessionId = ev.session_id;
+          if (ev.type === "stream_event" && ev.event?.type === "content_block_delta" && typeof ev.event.delta?.text === "string") pending += ev.event.delta.text;
+          if (ev.type === "result" && typeof ev.result === "string") finalText = ev.result;
+        } catch { /* ignore non-JSON diagnostics */ }
+      }
+    });
+    const finish = async (code: number | null) => {
+      clearInterval(timer);
+      await flush();
+      resolve({ finalText, sessionId, code, stderr: stderr.slice(-400) });
+    };
+    p.on("close", finish);
+    p.on("error", (e) => {
+      stderr += `\n${e.message}`;
+      void finish(-1);
+    });
+  });
+}
+
 export const chatDispatcher = schedules.task({
   id: "chat-dispatcher",
   cron: "*/2 * * * *",
   maxDuration: 3300,
   run: async () => {
-    const bin = resolveCodexBin();
     const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
-    const codexAuth = prepareCodexHome();
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      HOME: codexAuth.home,
-      CODEX_HOME: codexAuth.home,
-      OPENAI_API_KEY: "",
-      CODEX_API_KEY: "",
-    };
+    const baseEnv: NodeJS.ProcessEnv = { ...process.env };
     mkdirSync(SCRATCH, { recursive: true });
-
-    if (!bin) return { processed: 0, error: "codex binary not found" };
-    if (codexAuth.error) return { processed: 0, error: codexAuth.error };
 
     const started = Date.now();
     let processed = 0;
@@ -376,6 +442,16 @@ export const chatDispatcher = schedules.task({
       idle = 0;
 
       try {
+        const provider: AgentProvider = isAgentProvider(claim.agentProvider) ? claim.agentProvider : "codex";
+        const codexAuth = provider === "codex" ? prepareCodexHome() : null;
+        const bin = provider === "codex" ? resolveCodexBin() : resolveClaudeBin();
+        if (!bin) throw new Error(`${provider} binary not found`);
+        if (codexAuth?.error) throw new Error(codexAuth.error);
+        const home = provider === "codex" ? codexAuth!.home : "/tmp/claude-home";
+        mkdirSync(home, { recursive: true });
+        const env: NodeJS.ProcessEnv = provider === "codex"
+          ? { ...baseEnv, HOME: home, CODEX_HOME: home, OPENAI_API_KEY: "", CODEX_API_KEY: "" }
+          : { ...baseEnv, HOME: home, ANTHROPIC_API_KEY: "" };
         let cwd = SCRATCH;
         let repoContext: string;
         let singleRepoDir: string | null = null;
@@ -407,7 +483,7 @@ export const chatDispatcher = schedules.task({
         }
 
         const preset = isCodexPreset(claim.agentPreset) ? claim.agentPreset : "balanced";
-        const turn = await runTurn(
+        const turn = provider === "codex" ? await runCodexTurn(
           bin,
           cwd,
           env,
@@ -417,6 +493,8 @@ export const chatDispatcher = schedules.task({
           repoContext,
           preset,
           claim.agentSessionId,
+        ) : await runClaudeTurn(
+          bin, cwd, env, claim.assistantId, claim.userText, claim.history, repoContext, preset,
         );
 
         // Push whatever changed.
@@ -442,6 +520,7 @@ export const chatDispatcher = schedules.task({
           messageId: claim.assistantId,
           projectSlug: claim.projectSlug,
           status: turn.finalText.trim() ? "done" : "error",
+          agentProvider: provider,
           agentSessionId: turn.sessionId ?? undefined,
           pushResult,
           finalText,
