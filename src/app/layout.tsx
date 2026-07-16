@@ -32,7 +32,7 @@ const mono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "Remote Work Hub",
-  description: "Cloud-orchestrated Claude Code agents per project",
+  description: "Cloud Codex agents using ChatGPT subscription credits per project",
 };
 
 export default function RootLayout({
