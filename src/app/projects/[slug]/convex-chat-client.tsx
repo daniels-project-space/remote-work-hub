@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
+import { CODEX_PRESETS, type CodexPreset } from "@/lib/agent-options";
 
 type Msg = {
   _id: string;
@@ -28,6 +29,7 @@ export default function ConvexChatClient({
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [agentPreset, setAgentPreset] = useState<CodexPreset>("balanced");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const ordered = useMemo(
@@ -58,7 +60,7 @@ export default function ConvexChatClient({
     setSending(true);
     setDraft("");
     try {
-      await sendMessage({ projectSlug: slug, repo, text });
+      await sendMessage({ projectSlug: slug, repo, text, agentPreset });
     } finally {
       setSending(false);
     }
@@ -100,8 +102,8 @@ export default function ConvexChatClient({
               cloud agent · ready
             </p>
             <p className="mt-3 text-sm text-paper-dim max-w-sm mx-auto leading-relaxed">
-              Ask anything or describe a change. Claude Code (Opus) runs in the
-              cloud on your subscription, edits {repo}, and pushes when done.
+              Ask anything or describe a change. Codex runs in the cloud on your
+              ChatGPT subscription, edits {repo}, and pushes when done.
             </p>
           </div>
         ) : (
@@ -164,6 +166,28 @@ export default function ConvexChatClient({
       </div>
 
       <div className="sticky bottom-0 px-5 sm:px-8 py-4 bg-ink/80 backdrop-blur-sm border-t border-paper/10">
+        <div className="mb-2 flex items-center gap-2 overflow-x-auto pb-1">
+          {(Object.entries(CODEX_PRESETS) as [CodexPreset, (typeof CODEX_PRESETS)[CodexPreset]][]).map(
+            ([key, preset]) => (
+              <button
+                key={key}
+                type="button"
+                title={`${preset.model} · ${preset.effort} reasoning · ${preset.description}`}
+                onClick={() => setAgentPreset(key)}
+                className={`shrink-0 rounded-lg border px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.14em] transition-colors ${
+                  agentPreset === key
+                    ? "border-amber/60 bg-amber/15 text-amber"
+                    : "border-paper/10 text-paper-faint hover:border-paper/25 hover:text-paper-dim"
+                }`}
+              >
+                {preset.label}
+              </button>
+            ),
+          )}
+          <span className="ml-auto shrink-0 font-mono text-[9px] text-paper-faint">
+            {CODEX_PRESETS[agentPreset].model} · {CODEX_PRESETS[agentPreset].effort}
+          </span>
+        </div>
         <div className="flex items-end gap-2">
           <textarea
             value={draft}

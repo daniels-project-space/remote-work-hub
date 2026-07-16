@@ -71,7 +71,7 @@ export default function HomeClient({ projects }: { projects: ProjectMeta[] }) {
               <span className="italic text-paper-dim">Hub</span>
             </h1>
             <p className="mt-3 max-w-xl text-paper-dim text-[15px] leading-relaxed">
-              A launcher for cloud Claude Code agents. Each project gets its
+              A launcher for cloud Codex agents using ChatGPT subscription credits. Each project gets its
               own sandbox; jump in and out — sessions stay alive until you end
               them.
             </p>

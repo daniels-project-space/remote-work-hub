@@ -3,7 +3,7 @@
  *
  * A 1-minute declarative schedule (a PAT cannot trigger on demand, so we poll).
  * Each run drains the Convex pending-message queue. For each user message it
- * mounts the right files, runs Claude Code (Opus) HEADLESS on the subscription
+ * mounts the right files, runs Codex HEADLESS on ChatGPT subscription auth,
  * token, streams the reply into Convex, then commits + pushes.
  *
  * Three workspace modes:
@@ -11,14 +11,15 @@
  *    whichever it needs; each changed repo is pushed.
  *  - single real "owner/name" repo: cloned at the cwd; pushed if changed.
  *  - no repo: general chat in a scratch dir (always exists).
- * Claude ALWAYS runs in a directory that exists, and an empty/failed turn
+ * Codex ALWAYS runs in a directory that exists, and an empty/failed turn
  * finalizes with a visible error — never a blank bubble.
  */
 import { spawn } from "node:child_process";
-import { mkdirSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { schedules } from "@trigger.dev/sdk";
+import { CODEX_PRESETS, isCodexPreset, type CodexPreset } from "../lib/agent-options";
 
 const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
@@ -43,6 +44,10 @@ const META_REPOS_FALLBACK: Record<string, string> = {
   "youtube-studio-ai": "daniels-project-space/youtube-studio-ai",
   "db-cinema-v2": "daniels-project-space/db-cinema-v2",
   "finance-engine-v2": "daniels-project-space/finance-engine-v2",
+  "dropship-ai": "daniels-project-space/dropship-ai",
+  "media-engine": "daniels-project-space/media-engine",
+  "jarvis": "daniels-project-space/jarvis",
+  "app-factory-v2": "daniels-project-space/app-factory-v2",
 };
 
 /** Live list of every active (non-archived, non-fork) repo in the org. */
@@ -84,7 +89,8 @@ type ClaimResult = {
   repo: string;
   userText: string;
   assistantId: string;
-  claudeSessionId: string | null;
+  agentSessionId: string | null;
+  agentPreset: string;
   history: { role: string; text: string }[];
 } | null;
 
@@ -101,17 +107,17 @@ async function convexMutation(path: string, args: Record<string, unknown>) {
   return json.value;
 }
 
-function resolveClaudeBin(): string | null {
+function resolveCodexBin(): string | null {
   try {
-    const pkgJson = require.resolve("@anthropic-ai/claude-code/package.json");
+    const pkgJson = require.resolve("@openai/codex/package.json");
     const pkgDir = dirname(pkgJson);
     const nodeModules = dirname(dirname(pkgDir));
-    const candidates = [join(nodeModules, ".bin", "claude")];
+    const candidates = [join(nodeModules, ".bin", "codex")];
     try {
       const pkg = JSON.parse(readFileSync(pkgJson, "utf8")) as {
         bin?: string | Record<string, string>;
       };
-      const rel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.claude;
+      const rel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.codex;
       if (rel) candidates.push(join(pkgDir, rel));
     } catch {
       /* ignore */
@@ -120,6 +126,36 @@ function resolveClaudeBin(): string | null {
   } catch {
     return null;
   }
+}
+
+function prepareCodexHome(): { home: string; error?: string } {
+  const home = "/tmp/codex-home";
+  mkdirSync(home, { recursive: true });
+
+  // Business/Enterprise trusted automation can inject CODEX_ACCESS_TOKEN.
+  // Personal ChatGPT automation can instead seed the CLI's saved auth file,
+  // following OpenAI's documented advanced CI/CD flow. The base64 form avoids
+  // multiline/escaping damage in Trigger environment variables.
+  const encoded = process.env.CODEX_AUTH_JSON_B64;
+  const raw = process.env.CODEX_AUTH_JSON;
+  if (encoded || raw) {
+    try {
+      const json = encoded ? Buffer.from(encoded, "base64").toString("utf8") : raw!;
+      JSON.parse(json);
+      const path = join(home, "auth.json");
+      writeFileSync(path, json, { mode: 0o600 });
+      chmodSync(path, 0o600);
+    } catch {
+      return { home, error: "CODEX_AUTH_JSON(_B64) is not valid JSON" };
+    }
+  }
+  if (!process.env.CODEX_ACCESS_TOKEN && !encoded && !raw) {
+    return {
+      home,
+      error: "Codex subscription auth missing: set CODEX_ACCESS_TOKEN or CODEX_AUTH_JSON_B64 in Trigger",
+    };
+  }
+  return { home };
 }
 
 function sh(
@@ -220,6 +256,8 @@ async function runTurn(
   userText: string,
   history: { role: string; text: string }[],
   repoContext: string,
+  presetName: CodexPreset,
+  priorSessionId: string | null,
 ): Promise<{ finalText: string; sessionId: string | null; code: number | null; stderr: string }> {
   const preamble =
     "You are the Remote Work Hub agent, reachable from the user's phone. " +
@@ -232,21 +270,20 @@ async function runTurn(
         history.map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`).join("\n") +
         "\n\n"
       : "";
-  const prompt = `${convo}User: ${userText}`;
-
-  const args = [
-    "-p",
-    prompt,
-    "--append-system-prompt",
-    preamble,
+  const prompt = `${preamble}\n\n${convo}User: ${userText}`;
+  const preset = CODEX_PRESETS[presetName];
+  const common = [
     "--model",
-    "opus",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--include-partial-messages",
-    "--dangerously-skip-permissions",
+    preset.model,
+    "--config",
+    `model_reasoning_effort=\"${preset.effort}\"`,
+    "--json",
+    "--ignore-user-config",
+    "--dangerously-bypass-approvals-and-sandbox",
   ];
+  const args = priorSessionId
+    ? ["exec", "resume", ...common, priorSessionId, prompt]
+    : ["exec", ...common, prompt];
 
   return await new Promise((resolve) => {
     const p = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -278,12 +315,16 @@ async function runTurn(
         } catch {
           continue;
         }
-        if (ev.session_id && !sessionId) sessionId = ev.session_id;
-        if (ev.type === "stream_event" && ev.event?.type === "content_block_delta") {
-          const t = ev.event.delta?.text;
-          if (typeof t === "string") pending += t;
+        if (ev.type === "thread.started" && typeof ev.thread_id === "string") {
+          sessionId = ev.thread_id;
         }
-        if (ev.type === "result" && typeof ev.result === "string") finalText = ev.result;
+        if (ev.type === "item.completed" && ev.item?.type === "agent_message") {
+          const t = ev.item.text;
+          if (typeof t === "string" && t) {
+            pending += (pending || finalText ? "\n\n" : "") + t;
+            finalText = t;
+          }
+        }
       }
     });
 
@@ -305,17 +346,20 @@ export const chatDispatcher = schedules.task({
   cron: "*/2 * * * *",
   maxDuration: 3300,
   run: async () => {
-    const bin = resolveClaudeBin();
+    const bin = resolveCodexBin();
     const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
+    const codexAuth = prepareCodexHome();
     const env: NodeJS.ProcessEnv = {
       ...process.env,
-      HOME: "/tmp/claude-home",
-      ANTHROPIC_API_KEY: "",
+      HOME: codexAuth.home,
+      CODEX_HOME: codexAuth.home,
+      OPENAI_API_KEY: "",
+      CODEX_API_KEY: "",
     };
-    mkdirSync("/tmp/claude-home", { recursive: true });
     mkdirSync(SCRATCH, { recursive: true });
 
-    if (!bin) return { processed: 0, error: "claude binary not found" };
+    if (!bin) return { processed: 0, error: "codex binary not found" };
+    if (codexAuth.error) return { processed: 0, error: codexAuth.error };
 
     const started = Date.now();
     let processed = 0;
@@ -362,6 +406,7 @@ export const chatDispatcher = schedules.task({
             "No single repo is mounted this turn (general workspace) — answer the user; you cannot edit files.";
         }
 
+        const preset = isCodexPreset(claim.agentPreset) ? claim.agentPreset : "balanced";
         const turn = await runTurn(
           bin,
           cwd,
@@ -370,6 +415,8 @@ export const chatDispatcher = schedules.task({
           claim.userText,
           claim.history,
           repoContext,
+          preset,
+          claim.agentSessionId,
         );
 
         // Push whatever changed.
@@ -395,7 +442,7 @@ export const chatDispatcher = schedules.task({
           messageId: claim.assistantId,
           projectSlug: claim.projectSlug,
           status: turn.finalText.trim() ? "done" : "error",
-          claudeSessionId: turn.sessionId ?? undefined,
+          agentSessionId: turn.sessionId ?? undefined,
           pushResult,
           finalText,
         });

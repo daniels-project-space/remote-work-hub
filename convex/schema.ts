@@ -37,12 +37,14 @@ export default defineSchema({
     summary: v.string(),
   }).index("by_slug", ["projectSlug"]),
 
-  // ── Cloud chat (Trigger.dev + Claude Code on subscription) ──────────────
-  // One row per project; tracks Claude session continuity + working state.
+  // ── Cloud chat (Trigger.dev + Codex on ChatGPT subscription) ────────────
+  // One row per project; tracks agent session continuity + working state.
   chatSessions: defineTable({
     projectSlug: v.string(),
     repo: v.string(),
     status: v.union(v.literal("idle"), v.literal("working")),
+    agentSessionId: v.optional(v.string()),
+    // Kept during the migration so existing rows remain readable.
     claudeSessionId: v.optional(v.string()),
     lastActiveAt: v.number(),
   }).index("by_slug", ["projectSlug"]),
@@ -60,6 +62,9 @@ export default defineSchema({
       v.literal("error"),
     ),
     createdAt: v.number(),
+    agentPreset: v.optional(
+      v.union(v.literal("fast"), v.literal("balanced"), v.literal("deep"), v.literal("max")),
+    ),
     // populated on assistant messages when the turn finishes
     pushResult: v.optional(v.string()),
   })

@@ -29,8 +29,15 @@ async function ensureSession(
 
 /** Hub UI → post a user message (status "pending"; dispatcher picks it up). */
 export const sendMessage = mutation({
-  args: { projectSlug: v.string(), repo: v.string(), text: v.string() },
-  handler: async (ctx, { projectSlug, repo, text }) => {
+  args: {
+    projectSlug: v.string(),
+    repo: v.string(),
+    text: v.string(),
+    agentPreset: v.optional(
+      v.union(v.literal("fast"), v.literal("balanced"), v.literal("deep"), v.literal("max")),
+    ),
+  },
+  handler: async (ctx, { projectSlug, repo, text, agentPreset }) => {
     await ensureSession(ctx, projectSlug, repo);
     const id = await ctx.db.insert("chatMessages", {
       projectSlug,
@@ -38,6 +45,7 @@ export const sendMessage = mutation({
       text,
       status: "pending" as const,
       createdAt: Date.now(),
+      agentPreset: agentPreset ?? "balanced",
     });
     return id;
   },
@@ -69,7 +77,7 @@ export const sessionState = query({
  * Dispatcher → atomically claim the oldest pending user message. Marks it
  * consumed, opens a streaming assistant message, flips the session to
  * "working", and returns everything the task needs (incl. prior transcript for
- * context and the Claude session id for --resume).
+ * context and the Codex session id for `codex exec resume`).
  */
 export const claimNext = mutation({
   args: {},
@@ -114,7 +122,8 @@ export const claimNext = mutation({
       repo: session?.repo ?? "",
       userText: pending.text,
       assistantId,
-      claudeSessionId: session?.claudeSessionId ?? null,
+      agentSessionId: session?.agentSessionId ?? session?.claudeSessionId ?? null,
+      agentPreset: pending.agentPreset ?? "balanced",
       history,
     };
   },
@@ -136,7 +145,7 @@ export const finalize = mutation({
     messageId: v.id("chatMessages"),
     projectSlug: v.string(),
     status: v.union(v.literal("done"), v.literal("error")),
-    claudeSessionId: v.optional(v.string()),
+    agentSessionId: v.optional(v.string()),
     pushResult: v.optional(v.string()),
     finalText: v.optional(v.string()),
   },
@@ -152,7 +161,7 @@ export const finalize = mutation({
       .first();
     if (session) {
       const sp: Record<string, unknown> = { status: "idle", lastActiveAt: Date.now() };
-      if (args.claudeSessionId) sp.claudeSessionId = args.claudeSessionId;
+      if (args.agentSessionId) sp.agentSessionId = args.agentSessionId;
       await ctx.db.patch(session._id, sp);
     }
   },
