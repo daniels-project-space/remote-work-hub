@@ -9,6 +9,7 @@ import {
   META_REPOS,
   META_SLUG,
 } from "@/lib/projects";
+import { listByService } from "@/lib/vault";
 
 const PROJECT_PATH = "/home/user/workspace/project";
 const READY_PATH = `${PROJECT_PATH}/.hub-ready`;
@@ -59,40 +60,36 @@ function buildRemoteUrl(repo: string, ghToken: string): string {
   return `https://x-access-token:${ghToken}@github.com/${repo}.git`;
 }
 
-const VAULT_URL = process.env.VAULT_URL ?? "https://fantastic-roadrunner-485.convex.cloud";
-
-// Single-line setup command: pulls every key for each requested service from
-// the project-hub Convex secrets vault and writes KEY=VALUE lines to
-// .env.local. Idempotent — replaces any existing line with the same KEY.
+// Single-line setup command: writes only the secrets fetched by the trusted
+// hub server to .env.local. The sandbox never receives the durable vault
+// bearer, so an agent cannot use it to widen its own service scope.
 // The python source ships base64-encoded because the sandbox setup runner
 // only executes single-line commands (multi-line heredocs silently no-op).
 // stdout/stderr land in .hub-vault.log so a failed pull is diagnosable via
 // the file route.
-function buildVaultPullCommand(services: string[]): string {
+function buildVaultEnvCommand(values: Record<string, string>): string {
   const py = [
-    "import urllib.request, json, os",
-    `VAULT = ${JSON.stringify(VAULT_URL)}`,
-    `services = ${JSON.stringify(services)}`,
-    "lines = []",
-    "for svc in services:",
-    '    body = json.dumps({"path": "secrets:listByService", "args": {"service": svc}, "format": "json"}).encode()',
-    '    req = urllib.request.Request(VAULT + "/api/query", data=body, headers={"Content-Type": "application/json"}, method="POST")',
-    '    rows = json.loads(urllib.request.urlopen(req).read()).get("value") or []',
-    "    for r in rows:",
-    '        v = (r.get("value") or "").replace("\\n", "\\\\n")',
-    '        lines.append(r["keyName"] + "=" + v)',
+    "import os",
+    `values = ${JSON.stringify(values)}`,
+    'lines = [k + "=" + str(v).replace("\\n", "\\\\n") for k, v in values.items()]',
     `p = "${PROJECT_PATH}/.env.local"`,
     'existing = open(p).read() if os.path.exists(p) else ""',
     'new_keys = set(l.split("=", 1)[0] for l in lines)',
     'keep = [l for l in existing.splitlines() if l and l.split("=", 1)[0] not in new_keys]',
     'open(p, "w").write("\\n".join(keep + lines) + "\\n")',
-    'print("vault: wrote %d keys from %d services" % (len(lines), len(services)))',
+    'print("vault: wrote %d scoped keys" % len(lines))',
   ].join("\n");
   const b64 = Buffer.from(py, "utf8").toString("base64");
-  return `echo ${b64} | base64 -d > /tmp/vault_pull.py && python3 /tmp/vault_pull.py > ${PROJECT_PATH}/.hub-vault.log 2>&1`;
+  return `echo ${b64} | base64 -d > /tmp/vault_env.py && python3 /tmp/vault_env.py > ${PROJECT_PATH}/.hub-vault.log 2>&1 && rm -f /tmp/vault_env.py`;
 }
 
-function buildSetup(remoteUrl: string, priorLog: string | null, services: string[]): string[] {
+async function loadVaultEnv(services: string[]): Promise<Record<string, string>> {
+  const values: Record<string, string> = {};
+  for (const service of services) Object.assign(values, await listByService(service));
+  return values;
+}
+
+function buildSetup(remoteUrl: string, priorLog: string | null, vaultEnv: Record<string, string>): string[] {
   const steps = [
     `mkdir -p /home/user/workspace`,
     `git clone --depth 1 ${remoteUrl} ${PROJECT_PATH}`,
@@ -102,7 +99,7 @@ function buildSetup(remoteUrl: string, priorLog: string | null, services: string
     `git -C ${PROJECT_PATH} remote set-url origin ${remoteUrl}`,
     `git config --system --add safe.directory '*' || git config --global --add safe.directory '*'`,
   ];
-  if (services.length > 0) steps.push(buildVaultPullCommand(services));
+  if (Object.keys(vaultEnv).length > 0) steps.push(buildVaultEnvCommand(vaultEnv));
   if (priorLog) {
     const b64 = Buffer.from(priorLog, "utf8").toString("base64");
     steps.push(`mkdir -p /home/user/.hub`);
@@ -130,8 +127,7 @@ function buildMetaWorkspaceMdCommand(services: string[]): string {
     `- The hub Push button pushes EVERY repo that has new commits — keep commits clean per repo.`,
     `- Vercel auto-deploys each app from main after push; no manual deploy needed.`,
     `- Platform secrets are in ./.env.local at this workspace root (${services.join(", ")} + GITHUB_TOKEN). It is OUTSIDE every repo — never copy it into a repo.`,
-    `- Any other service's keys live in the vault:`,
-    `  curl -s -X POST '${VAULT_URL}/api/query' -H 'Content-Type: application/json' -d '{"path":"secrets:listByService","args":{"service":"<name>"},"format":"json"}'`,
+    `- The workspace is intentionally limited to the scoped secrets already materialized in ./.env.local.`,
   ].join("\n");
   const b64 = Buffer.from(content, "utf8").toString("base64");
   return `echo ${b64} | base64 -d > ${PROJECT_PATH}/WORKSPACE.md`;
@@ -145,6 +141,7 @@ function buildMetaSetup(
   ghToken: string,
   priorLog: string | null,
   services: string[],
+  vaultEnv: Record<string, string>,
 ): string[] {
   const steps = [`mkdir -p ${PROJECT_PATH}`];
   for (const [dir, repo] of Object.entries(META_REPOS)) {
@@ -158,7 +155,7 @@ function buildMetaSetup(
     `git config --system --add safe.directory '*' || git config --global --add safe.directory '*'`,
   );
   steps.push(buildMetaWorkspaceMdCommand(services));
-  if (services.length > 0) steps.push(buildVaultPullCommand(services));
+  if (Object.keys(vaultEnv).length > 0) steps.push(buildVaultEnvCommand(vaultEnv));
   steps.push(
     `printf 'GITHUB_TOKEN=%s\\nGH_TOKEN=%s\\n' '${ghToken}' '${ghToken}' >> ${PROJECT_PATH}/.env.local`,
   );
@@ -241,13 +238,15 @@ export async function startSpawn(slug: string): Promise<Session> {
   const c = agentClient();
 
   const priorLog = await getLatestLog(slug);
+  const services = getServicesForSlug(slug);
+  const vaultEnv = await loadVaultEnv(services);
   const setup =
     slug === META_SLUG
-      ? buildMetaSetup(ghToken, priorLog, getServicesForSlug(slug))
+      ? buildMetaSetup(ghToken, priorLog, services, vaultEnv)
       : buildSetup(
           buildRemoteUrl(repo, ghToken),
           priorLog,
-          getServicesForSlug(slug),
+          vaultEnv,
         );
   const sandbox = await c.sandboxes.create({
     agent: "hub-tester",

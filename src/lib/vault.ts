@@ -23,12 +23,14 @@ function vaultUrl(): string {
 
 /** List all secrets for a service as a flat { keyName: value } map (aliases included). */
 export async function listByService(service: string): Promise<Record<string, string>> {
+  const vaultToken = process.env.VAULT_ACCESS_TOKEN;
+  if (!vaultToken) throw new Error("VAULT_ACCESS_TOKEN is not configured");
   const res = await fetch(`${vaultUrl()}/api/query`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       path: "secrets:listByService",
-      args: { service },
+      args: { service, vaultToken },
       format: "json",
     }),
   });

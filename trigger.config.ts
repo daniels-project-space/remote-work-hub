@@ -36,8 +36,12 @@ export default defineConfig({
       // and Trigger stores it as a managed runtime secret. If it is absent,
       // existing cloud env vars are left untouched.
       syncEnvVars(() => {
-        const value = process.env.CODEX_AUTH_JSON_B64;
-        return value ? { CODEX_AUTH_JSON_B64: value } : undefined;
+        const values = Object.fromEntries(
+          ["CODEX_AUTH_JSON_B64", "VAULT_ACCESS_TOKEN"]
+            .map((key) => [key, process.env[key]])
+            .filter((entry): entry is [string, string] => Boolean(entry[1])),
+        );
+        return Object.keys(values).length ? values : undefined;
       }),
     ],
   },
