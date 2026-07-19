@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import {
   Newsreader,
   IBM_Plex_Sans,
@@ -81,6 +82,11 @@ export default function RootLayout({
         <ConvexClientProvider>
           <SessionProvider>{children}</SessionProvider>
         </ConvexClientProvider>
+        <Script
+          src="https://jarvis-orcin-six.vercel.app/jarvis-embed.js?v=universal-controls-20260719-1"
+          strategy="afterInteractive"
+          data-jarvis-app="remote-work-hub"
+        />
       </body>
     </html>
   );
