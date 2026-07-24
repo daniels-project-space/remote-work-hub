@@ -1,7 +1,10 @@
 /**
  * `chat-dispatcher` — the cloud replacement for the 21st.dev hub chat.
  *
- * A 1-minute declarative schedule (a PAT cannot trigger on demand, so we poll).
+ * An operator-triggered queue drain. The former two-minute declarative poll
+ * created 720 Trigger runs/day even with no queued chat; the current hub UI
+ * uses its direct agent transport, so this legacy dispatcher is retained only
+ * as an explicit recovery tool.
  * Each run drains the Convex pending-message queue. For each user message it
  * mounts the right files, runs Codex HEADLESS on ChatGPT subscription auth,
  * token, streams the reply into Convex, then commits + pushes.
@@ -18,16 +21,14 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { schedules } from "@trigger.dev/sdk";
+import { task } from "@trigger.dev/sdk";
 import { CLAUDE_PRESETS, CODEX_PRESETS, isAgentProvider, isCodexPreset, type AgentProvider, type CodexPreset } from "../lib/agent-options";
 
 const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
 const SCRATCH = "/tmp/ws/_scratch";
 const RUN_BUDGET_MS = 55_000;
-// Poll-diet 2026-07-03: 2 idle polls (~3s) before exiting an empty run, and
-// the schedule below fires every 2 min instead of every 1 (halves Trigger
-// runs/day; worst-case cold pickup 2 min, warm follow-ups unaffected).
+// A manual recovery run still exits quickly after two empty queue checks.
 const IDLE_EXITS = 2;
 const POLL_MS = 1_500;
 
@@ -418,9 +419,8 @@ async function runClaudeTurn(
   });
 }
 
-export const chatDispatcher = schedules.task({
+export const chatDispatcher = task({
   id: "chat-dispatcher",
-  cron: "*/2 * * * *",
   maxDuration: 3300,
   run: async () => {
     const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
