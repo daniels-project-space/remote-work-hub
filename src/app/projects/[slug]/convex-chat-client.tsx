@@ -29,6 +29,10 @@ export default function ConvexChatClient({
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [dispatchFailure, setDispatchFailure] = useState<{
+    messageId: string;
+    error: string;
+  } | null>(null);
   const [agentPreset, setAgentPreset] = useState<CodexPreset>("balanced");
   const [agentProvider, setAgentProvider] = useState<AgentProvider>("codex");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -60,13 +64,43 @@ export default function ConvexChatClient({
 
   const working = session?.status === "working";
 
+  async function dispatchQueuedMessage(messageId: string) {
+    const dispatch = await fetch("/api/chat/dispatch", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messageId }),
+    });
+    if (!dispatch.ok) {
+      const body = (await dispatch.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(body?.error ?? "The agent could not be started");
+    }
+  }
+
   async function submit() {
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true);
     setDraft("");
+    setDispatchFailure(null);
+    let messageId: string | null = null;
     try {
-      await sendMessage({ projectSlug: slug, repo, text, agentProvider, agentPreset });
+      messageId = await sendMessage({
+        projectSlug: slug,
+        repo,
+        text,
+        agentProvider,
+        agentPreset,
+      });
+      await dispatchQueuedMessage(messageId);
+    } catch (error) {
+      setDraft(text);
+      if (messageId) {
+        setDispatchFailure({
+          messageId,
+          error: error instanceof Error ? error.message : "The agent could not be started",
+        });
+      }
+      console.error("Unable to dispatch cloud agent", error);
     } finally {
       setSending(false);
     }
@@ -236,6 +270,33 @@ export default function ConvexChatClient({
             send
           </button>
         </div>
+        {dispatchFailure && (
+          <div className="mt-2 flex items-center justify-between gap-3 rounded-lg border border-rose-soft/40 bg-rose-soft/[0.05] px-3 py-2">
+            <p className="font-mono text-[10px] text-rose-soft">
+              Agent start failed: {dispatchFailure.error}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                void dispatchQueuedMessage(dispatchFailure.messageId)
+                  .then(() => setDispatchFailure(null))
+                  .catch((error) =>
+                    setDispatchFailure((current) =>
+                      current
+                        ? {
+                            ...current,
+                            error: error instanceof Error ? error.message : "The agent could not be started",
+                          }
+                        : current,
+                    ),
+                  );
+              }}
+              className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-amber hover:text-paper"
+            >
+              retry start
+            </button>
+          </div>
+        )}
         <p className="mt-2 font-mono text-[10px] text-paper-faint">
           First reply can take up to a minute · then follow-ups are quick · changes auto-push to {repo}
         </p>

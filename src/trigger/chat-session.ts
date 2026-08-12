@@ -23,6 +23,8 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { task } from "@trigger.dev/sdk";
 import { CLAUDE_PRESETS, CODEX_PRESETS, isAgentProvider, isCodexPreset, type AgentProvider, type CodexPreset } from "../lib/agent-options";
+import { getServicesForSlug } from "../lib/projects";
+import { listByService } from "../lib/vault";
 
 const require = createRequire(import.meta.url);
 const CONVEX = "https://groovy-cardinal-733.convex.cloud";
@@ -37,6 +39,21 @@ const POLL_MS = 1_500;
 // list only if the GitHub API call fails.
 const META_SLUG = "hq";
 const ORG = "daniels-project-space";
+const CLAUDE_MEMORY = `# Remote Work Hub worker
+
+- This turn has the selected project's scoped Vault values in its process environment. The central Vault bearer is deliberately not available to you.
+- Treat every environment value as sensitive: use it only through the relevant app or tool, never print, copy, commit, or include it in a response.
+- Claude Code is authenticated with the configured Claude subscription. Do not add an API-key fallback or change provider authentication.
+- Inspect the actual repository before editing. When you make code changes, commit them; the trusted parent process handles pushing.
+`;
+const PARENT_ONLY_ENV = [
+  "VAULT_ACCESS_TOKEN",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "CODEX_ACCESS_TOKEN",
+  "CODEX_AUTH_JSON",
+  "CODEX_AUTH_JSON_B64",
+] as const;
 const META_REPOS_FALLBACK: Record<string, string> = {
   "project-hub": "daniels-project-space/project-hub",
   "remote-work-hub": "daniels-project-space/remote-work-hub",
@@ -173,6 +190,66 @@ function prepareCodexHome(): { home: string; error?: string } {
     };
   }
   return { home };
+}
+
+function prepareClaudeHome(): { home: string; error?: string } {
+  const home = "/tmp/claude-home";
+  if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    return {
+      home,
+      error: "Claude subscription auth missing: set CLAUDE_CODE_OAUTH_TOKEN in Trigger",
+    };
+  }
+  const memoryDir = join(home, ".claude");
+  mkdirSync(memoryDir, { recursive: true });
+  writeFileSync(join(memoryDir, "CLAUDE.md"), CLAUDE_MEMORY, { mode: 0o600 });
+  return { home };
+}
+
+/**
+ * Resolve a turn-local environment without leaking the central vault bearer or
+ * the parent GitHub credential into the agent. Explicit Trigger variables win
+ * over vault values, just as they do for the sandbox workspace path.
+ */
+async function prepareAgentEnv(
+  provider: AgentProvider,
+  projectSlug: string,
+  baseEnv: NodeJS.ProcessEnv,
+  home: string,
+): Promise<NodeJS.ProcessEnv> {
+  const env: NodeJS.ProcessEnv = { ...baseEnv, HOME: home };
+  for (const key of PARENT_ONLY_ENV) delete env[key];
+
+  for (const service of getServicesForSlug(projectSlug)) {
+    let values: Record<string, string>;
+    try {
+      values = await listByService(service);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Scoped vault access failed for ${service}: ${detail}`);
+    }
+    for (const [key, value] of Object.entries(values)) {
+      if (!env[key]) env[key] = value;
+    }
+  }
+
+  // The subscription CLIs must never silently fall back to API-credit keys.
+  env.OPENAI_API_KEY = "";
+  env.CODEX_API_KEY = "";
+  env.ANTHROPIC_API_KEY = "";
+  env.ANTHROPIC_AUTH_TOKEN = "";
+
+  if (provider === "codex") {
+    env.CODEX_HOME = home;
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+  } else {
+    const oauthToken = baseEnv.CLAUDE_CODE_OAUTH_TOKEN;
+    if (!oauthToken) throw new Error("Claude subscription auth missing after vault hydration");
+    env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+    delete env.CODEX_HOME;
+  }
+
+  return env;
 }
 
 function sh(
@@ -367,6 +444,7 @@ async function runClaudeTurn(
   history: { role: string; text: string }[],
   repoContext: string,
   presetName: CodexPreset,
+  priorSessionId: string | null,
 ): Promise<{ finalText: string; sessionId: string | null; code: number | null; stderr: string }> {
   const preamble =
     "You are the Remote Work Hub agent, reachable from the user's phone. " + repoContext +
@@ -375,6 +453,7 @@ async function runClaudeTurn(
     ? "Recent conversation:\n" + history.map((h) => `${h.role === "user" ? "User" : "You"}: ${h.text}`).join("\n") + "\n\n"
     : "";
   const args = [
+    ...(priorSessionId ? ["--resume", priorSessionId] : []),
     "-p", `${convo}User: ${userText}`, "--append-system-prompt", preamble,
     "--model", CLAUDE_PRESETS[presetName].model, "--output-format", "stream-json", "--verbose",
     "--include-partial-messages", "--dangerously-skip-permissions",
@@ -422,7 +501,7 @@ async function runClaudeTurn(
 export const chatDispatcher = task({
   id: "chat-dispatcher",
   maxDuration: 3300,
-  run: async () => {
+  run: async (_payload: { messageId: string }) => {
     const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "";
     const baseEnv: NodeJS.ProcessEnv = { ...process.env };
     mkdirSync(SCRATCH, { recursive: true });
@@ -444,14 +523,13 @@ export const chatDispatcher = task({
       try {
         const provider: AgentProvider = isAgentProvider(claim.agentProvider) ? claim.agentProvider : "codex";
         const codexAuth = provider === "codex" ? prepareCodexHome() : null;
+        const claudeAuth = provider === "claude" ? prepareClaudeHome() : null;
         const bin = provider === "codex" ? resolveCodexBin() : resolveClaudeBin();
         if (!bin) throw new Error(`${provider} binary not found`);
         if (codexAuth?.error) throw new Error(codexAuth.error);
-        const home = provider === "codex" ? codexAuth!.home : "/tmp/claude-home";
-        mkdirSync(home, { recursive: true });
-        const env: NodeJS.ProcessEnv = provider === "codex"
-          ? { ...baseEnv, HOME: home, CODEX_HOME: home, OPENAI_API_KEY: "", CODEX_API_KEY: "" }
-          : { ...baseEnv, HOME: home, ANTHROPIC_API_KEY: "" };
+        if (claudeAuth?.error) throw new Error(claudeAuth.error);
+        const home = provider === "codex" ? codexAuth!.home : claudeAuth!.home;
+        const env = await prepareAgentEnv(provider, claim.projectSlug, baseEnv, home);
         let cwd = SCRATCH;
         let repoContext: string;
         let singleRepoDir: string | null = null;
@@ -495,6 +573,7 @@ export const chatDispatcher = task({
           claim.agentSessionId,
         ) : await runClaudeTurn(
           bin, cwd, env, claim.assistantId, claim.userText, claim.history, repoContext, preset,
+          claim.agentSessionId,
         );
 
         // Push whatever changed.

@@ -1,8 +1,18 @@
-# Subscription-backed Codex dispatcher
+# Subscription-backed cloud dispatcher
 
-Project chat runs `codex exec` inside the private Trigger.dev worker. It clears
-`OPENAI_API_KEY` and `CODEX_API_KEY`, so work uses ChatGPT-managed Codex access
-rather than OpenAI Platform API credits.
+Project chat runs the selected `codex exec` or `claude -p` worker inside private
+Trigger.dev infrastructure. A durable Convex message triggers one queue-drain
+run on demand; no idle polling schedule is required. The selected provider is
+stored with the message, so Codex and Claude work can interleave safely.
+
+Both worker paths hydrate only the selected project's scoped Vault services
+into a turn-local process environment. The central `VAULT_ACCESS_TOKEN` and
+the parent GitHub credential never reach either agent. Claude receives a fresh
+`~/.claude/CLAUDE.md` memory file each turn documenting that boundary. Neither
+worker falls back to billed API-key authentication.
+
+Codex clears `OPENAI_API_KEY` and `CODEX_API_KEY`, so work uses
+ChatGPT-managed Codex access rather than OpenAI Platform API credits.
 
 The UI exposes four explicit presets:
 
@@ -22,3 +32,7 @@ The dispatcher requires `GITHUB_TOKEN` for private clone/push access. Jarvis,
 App Factory v2, and every other project are selected from server-owned
 allowlists; the HQ workspace discovers additional active organization repos at
 runtime.
+
+Claude requires `CLAUDE_CODE_OAUTH_TOKEN` in the Trigger project. The worker
+uses it only for Claude Code subscription authentication and resumes the prior
+Claude session for the same project; it is not written to the workspace.
