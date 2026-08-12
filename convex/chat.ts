@@ -78,8 +78,12 @@ export const sessionState = query({
 /**
  * Dispatcher → atomically claim the oldest pending user message. Marks it
  * consumed, opens a streaming assistant message, flips the session to
- * "working", and returns everything the task needs (incl. prior transcript for
- * context and the Codex session id for `codex exec resume`).
+ * "working", and returns the durable conversation transcript for context.
+ *
+ * The per-provider CLI session files live inside ephemeral Trigger workers, so
+ * their native session IDs cannot be resumed reliably by a later worker (and
+ * are never interchangeable between Codex and Claude). The transcript is the
+ * provider-neutral handoff contract.
  */
 export const claimNext = mutation({
   args: {},
@@ -125,10 +129,9 @@ export const claimNext = mutation({
       userText: pending.text,
       assistantId,
       agentProvider: pending.agentProvider ?? "codex",
-      agentSessionId:
-        (pending.agentProvider ?? "codex") === "claude"
-          ? session?.claudeSessionId ?? null
-          : session?.codexSessionId ?? session?.agentSessionId ?? null,
+      // Always start a fresh provider turn from the shared transcript. Native
+      // CLI resume IDs refer to state stored only in the original worker.
+      agentSessionId: null,
       agentPreset: pending.agentPreset ?? "balanced",
       history,
     };

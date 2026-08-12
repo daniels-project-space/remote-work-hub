@@ -3,7 +3,10 @@
 Project chat runs the selected `codex exec` or `claude -p` worker inside private
 Trigger.dev infrastructure. A durable Convex message triggers one queue-drain
 run on demand; no idle polling schedule is required. The selected provider is
-stored with the message, so Codex and Claude work can interleave safely.
+stored with the message, so Codex and Claude work can interleave safely. Each
+fresh worker receives the durable recent transcript, rather than attempting to
+resume a provider-local CLI session that cannot survive an ephemeral worker or
+transfer to the other provider.
 
 Both worker paths hydrate only the selected project's scoped Vault services
 into a turn-local process environment. The central `VAULT_ACCESS_TOKEN` and
@@ -24,7 +27,7 @@ The UI exposes four explicit presets:
 For Business/Enterprise trusted automation, set `CODEX_ACCESS_TOKEN` in the
 Trigger project. For a saved ChatGPT CLI login, set `CODEX_AUTH_JSON_B64` to the
 base64 encoding of the machine's Codex `auth.json`. Treat either value as a
-password. Never commit it or put it in the Project Hub's anonymously readable
+password. Never commit it or put it in the Project Hub's capability-gated
 vault. The deploy config can sync `CODEX_AUTH_JSON_B64` from a one-use local env
 file into Trigger's managed environment.
 

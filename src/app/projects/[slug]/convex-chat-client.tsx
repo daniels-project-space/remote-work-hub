@@ -223,6 +223,9 @@ export default function ConvexChatClient({
             </button>
           ))}
         </div>
+        <p className="mb-2 font-mono text-[10px] text-paper-faint">
+          Next turn: {agentProvider === "codex" ? "Codex" : "Claude"} · the shared conversation transfers automatically
+        </p>
         <div className="mb-2 flex items-center gap-2 overflow-x-auto pb-1">
           {(Object.entries(agentProvider === "codex" ? CODEX_PRESETS : CLAUDE_PRESETS) as [CodexPreset, { label: string; model: string; description: string; effort?: string }][]).map(
             ([key, preset]) => (

@@ -37,8 +37,10 @@ export default defineSchema({
     summary: v.string(),
   }).index("by_slug", ["projectSlug"]),
 
-  // ── Cloud chat (Trigger.dev + Codex on ChatGPT subscription) ────────────
-  // One row per project; tracks agent session continuity + working state.
+  // ── Cloud chat (Trigger.dev + subscription agents) ──────────────────────
+  // One row per project; tracks working state. Legacy native session IDs stay
+  // readable but are not resumed: workers are ephemeral and the transcript is
+  // the provider-neutral continuity source.
   chatSessions: defineTable({
     projectSlug: v.string(),
     repo: v.string(),
